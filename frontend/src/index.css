@@ -1,0 +1,41 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; }
+
+body {
+  background: #F9FAFB;
+  color: #111827;
+  font-family: "Inter", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#root { height: 100vh; }
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
+
+.gherkin-feature  { color: #7C3AED; font-weight: 600; }
+.gherkin-keyword  { color: #2563EB; font-weight: 500; }
+.gherkin-given    { color: #D97706; }
+.gherkin-when     { color: #16A34A; }
+.gherkin-then     { color: #DC2626; }
+.gherkin-and      { color: #6B7280; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 0.2s ease forwards; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { animation: spin 0.75s linear infinite; }
+
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.pulse-dot { animation: pulse 1.5s infinite; }

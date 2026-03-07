@@ -1,0 +1,36 @@
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+
+# ── Database (SQLite async) ────────────────────────────────────────────────────
+sqlalchemy==2.0.35
+aiosqlite==0.20.0
+
+# ── LLM providers ─────────────────────────────────────────────────────────────
+anthropic==0.34.2
+openai==1.51.0
+google-generativeai==0.8.3
+
+# ── Vector store (Qdrant) ─────────────────────────────────────────────────────
+qdrant-client==1.11.3
+
+# ── Document parsing ──────────────────────────────────────────────────────────
+pypdf==4.3.1
+python-docx==1.1.2
+openpyxl==3.1.5
+
+# ── GitLab API ────────────────────────────────────────────────────────────────
+python-gitlab==4.9.0
+
+# ── Config & validation ───────────────────────────────────────────────────────
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.3.3
+pytest-asyncio==0.24.0
+httpx==0.27.2
+
+# ── Local embeddings (optional, set EMBEDDING_PROVIDER=local) ───────────────
+# sentence-transformers==3.1.1

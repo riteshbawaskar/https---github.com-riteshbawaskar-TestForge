@@ -1,0 +1,4 @@
+This application is a SSO based authentication application
+so you need to provide sso login step before start of every test case
+
+for user registration flow with email an otp is sent to user account and is validated before considering the email id for authentication.
