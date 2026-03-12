@@ -28,7 +28,7 @@ export default function DesignPage() {
 
   // UI
   const [activeReqId, setActiveReqId]           = useState<string | null>(null);
-  const [urlInput, setUrlInput]                 = useState("");
+  const [issueIdInput, setIssueIdInput]          = useState("");
   const [fmt, setFmt]                           = useState<"BDD" | "MANUAL">("BDD");
   const [editingTc, setEditingTc]               = useState<TestCase | null>(null);
   const [showGen, setShowGen]                   = useState(false);
@@ -38,6 +38,7 @@ export default function DesignPage() {
   const [fetchingUrl, setFetchingUrl]           = useState(false);
   const [expandAll, setExpandAll]               = useState(false);
   const [pushingToGitlab, setPushingToGitlab]   = useState(false);
+  const [showNew, setShowNew]                   = useState(false);
 
   // Generation job tracking
   const [activeJobId, setActiveJobId]           = useState<string | null>(null);
@@ -93,17 +94,17 @@ export default function DesignPage() {
   // ── Fetch requirement from GitLab ────────────────────────────────────────
   const handleFetch = async () => {
     if (!projectId) { toast("No active project — configure one first", true); return; }
-    const url = urlInput.trim();
-    if (!url.match(/gitlab.*issues\/\d+/)) {
-      toast("Invalid GitLab issue URL", true);
+    const issueId = parseInt(issueIdInput.trim(), 10);
+    if (isNaN(issueId) || issueId <= 0) {
+      toast("Enter a valid GitLab issue ID (number)", true);
       return;
     }
     setFetchingUrl(true);
     try {
-      const req = await requirementsApi.fetch(projectId, url);
+      const req = await requirementsApi.fetch(projectId, issueId);
       setReqs(r => r.find(x => x.id === req.id) ? r : [req, ...r]);
       setActiveReqId(req.id);
-      setUrlInput("");
+      setIssueIdInput("");
       toast(`✓ Issue #${req.gitlab_issue_id} loaded`);
     } catch (e: any) {
       toast(`✗ ${e.message}`, true);
@@ -201,6 +202,17 @@ export default function DesignPage() {
     exportToExcel(req, tcs);
   };
 
+  // ── Create test case manually ───────────────────────────────────────────
+  const handleCreate = async (data: Parameters<typeof testCasesApi.create>[0]) => {
+    try {
+      const tc = await testCasesApi.create(data);
+      setTcMap(m => ({ ...m, [activeReqId!]: [...(m[activeReqId!] ?? []), tc] }));
+      toast("✓ Test case created");
+    } catch (e: any) {
+      toast(`✗ ${e.message}`, true);
+    }
+  };
+
   // ── Push to GitLab ───────────────────────────────────────────────────────
   const handleGitLabPush = async () => {
     if (!activeReqId) { toast("Select a requirement first", true); return; }
@@ -255,12 +267,13 @@ export default function DesignPage() {
         <div className="p-3 border-b border-gray-200 bg-gray-50 flex-shrink-0">
           <div className="flex gap-2 mb-1.5">
             <div className="relative flex-1">
-              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">🔗</span>
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm font-semibold pointer-events-none">#</span>
               <input
-                value={urlInput}
-                onChange={e => setUrlInput(e.target.value)}
+                value={issueIdInput}
+                onChange={e => setIssueIdInput(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && handleFetch()}
-                placeholder="Paste GitLab issue URL…"
+                placeholder="GitLab issue ID…"
+                inputMode="numeric"
                 className="w-full bg-white border border-gray-300 rounded-md pl-8 pr-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 placeholder:text-gray-400"
               />
             </div>
@@ -355,8 +368,10 @@ export default function DesignPage() {
             <button
               onClick={() => activeReqId ? setShowGen(true) : toast("Select a requirement first", true)}
               className="px-3 py-1.5 rounded-lg bg-accent text-black text-[11px] font-bold font-mono hover:bg-[#00deff] transition-all shadow-[0_0_14px_rgba(0,200,240,0.2)]"
-            >✦ Generate</button>
-          </div>
+            >✦ Generate</button>            <button
+              onClick={() => activeReqId ? setShowNew(true) : toast("Select a requirement first", true)}
+              className="px-3 py-1.5 rounded-md border border-gray-300 bg-white text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors"
+            >+ New</button>          </div>
         </div>
 
         {/* Context bar */}
@@ -464,6 +479,15 @@ export default function DesignPage() {
         onClose={() => setShowEdit(false)}
         testCase={editingTc}
         onSave={handleSaveEdit}
+      />
+      <EditTestCaseModal
+        open={showNew}
+        onClose={() => setShowNew(false)}
+        testCase={null}
+        requirementId={activeReqId ?? undefined}
+        initialFormat={fmt}
+        onSave={() => {}}
+        onCreate={handleCreate}
       />
       {showGenOverlay && <GenerationOverlay progressMessage={overlayProgress ?? undefined} />}
     </div>

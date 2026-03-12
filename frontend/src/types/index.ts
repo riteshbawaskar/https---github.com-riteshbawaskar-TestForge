@@ -7,6 +7,11 @@ export interface Project {
   default_format: "BDD" | "MANUAL" | "BOTH";
   llm_model: string;
   llm_provider: string;
+  llm_api_url?: string;
+  llm_api_key_set: boolean;
+  embedding_provider?: string;
+  embedding_model?: string;
+  embedding_api_key_set: boolean;
   custom_instructions?: string;
   label_include?: string;
   label_exclude?: string;

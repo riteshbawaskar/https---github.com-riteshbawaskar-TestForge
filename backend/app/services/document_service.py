@@ -20,14 +20,32 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from app.core.config import settings
 from app.core.exceptions import DocumentIngestionError
 
 import logging
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class EmbeddingConfig:
+    """Per-project embedding configuration.  Falls back to global settings if any field is empty."""
+    provider: str = ""
+    model: str = ""
+    api_key: str = ""
+
+    def resolved_provider(self) -> str:
+        return self.provider or settings.EMBEDDING_PROVIDER
+
+    def resolved_model(self) -> str:
+        return self.model or settings.EMBEDDING_MODEL
+
+    def resolved_key(self) -> str:
+        return self.api_key  # callers fall back to settings key when empty
 
 
 # ─────────────────────────────── Qdrant helpers ──────────────────────────────
@@ -48,28 +66,25 @@ def _collection_name(project_id: str) -> str:
     return f"project_{project_id.replace('-', '_')}"
 
 
-def _vector_size() -> int:
+def _vector_size(cfg: Optional[EmbeddingConfig] = None) -> int:
     """Return the vector dimension for the configured embedding provider/model."""
-    p = settings.EMBEDDING_PROVIDER.lower()
+    p = (cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER).lower()
+    m = (cfg.resolved_model() if cfg else settings.EMBEDDING_MODEL).lower()
     if p == "local":
         return 384
     if p == "gemini":
-        m = settings.EMBEDDING_MODEL.lower()
-        # gemini-embedding-001 and newer exp models return 3072 dims;
-        # text-embedding-004 and text-embedding-003 return 768.
         if "embedding-001" in m or "embedding-exp" in m:
             return 3072
         return 768
     # OpenAI
-    m = settings.EMBEDDING_MODEL
     if "large" in m:
         return 3072
     return 1536  # small / ada-002
 
 
-def _ensure_collection(client, name: str) -> None:
+def _ensure_collection(client, name: str, cfg: Optional[EmbeddingConfig] = None) -> None:
     from qdrant_client.models import Distance, VectorParams
-    expected = _vector_size()
+    expected = _vector_size(cfg)
     existing = {c.name for c in client.get_collections().collections}
     if name in existing:
         info = client.get_collection(name)
@@ -91,33 +106,35 @@ def _ensure_collection(client, name: str) -> None:
 
 # ─────────────────────────────── Embedding ───────────────────────────────────
 
-def _embed_openai(texts: List[str]) -> List[List[float]]:
-    if not settings.OPENAI_API_KEY:
+def _embed_openai(texts: List[str], model: str = "", api_key: str = "") -> List[List[float]]:
+    key = api_key or settings.OPENAI_API_KEY
+    if not key:
         raise DocumentIngestionError(
-            "EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set.\n"
-            "Either add OPENAI_API_KEY to .env, or switch to:\n"
-            "  EMBEDDING_PROVIDER=gemini  (needs GEMINI_API_KEY)\n"
-            "  EMBEDDING_PROVIDER=local   (no API key needed)"
+            "EMBEDDING_PROVIDER=openai but no API key found.\n"
+            "Set OPENAI_API_KEY in .env or add a project-level key in Settings."
         )
+    resolved_model = model or settings.EMBEDDING_MODEL
     import openai
-    client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-    resp = client.embeddings.create(model=settings.EMBEDDING_MODEL, input=texts)
+    client = openai.OpenAI(api_key=key)
+    resp = client.embeddings.create(model=resolved_model, input=texts)
     return [item.embedding for item in resp.data]
 
 
-def _embed_gemini(texts: List[str]) -> List[List[float]]:
-    if not settings.GEMINI_API_KEY:
+def _embed_gemini(texts: List[str], model: str = "", api_key: str = "") -> List[List[float]]:
+    key = api_key or settings.GEMINI_API_KEY
+    if not key:
         raise DocumentIngestionError(
-            "EMBEDDING_PROVIDER=gemini but GEMINI_API_KEY is not set.\n"
-            "Add GEMINI_API_KEY to .env or switch EMBEDDING_PROVIDER."
+            "EMBEDDING_PROVIDER=gemini but no API key found.\n"
+            "Set GEMINI_API_KEY in .env or add a project-level key in Settings."
         )
     import google.generativeai as genai
-    genai.configure(api_key=settings.GEMINI_API_KEY)
-    model = settings.EMBEDDING_MODEL if settings.EMBEDDING_MODEL != "text-embedding-3-small" \
-        else "models/text-embedding-004"
+    genai.configure(api_key=key)
+    resolved_model = model or settings.EMBEDDING_MODEL
+    if resolved_model == "text-embedding-3-small":
+        resolved_model = "models/text-embedding-004"
     results = []
     for text in texts:
-        r = genai.embed_content(model=model, content=text, task_type="retrieval_document")
+        r = genai.embed_content(model=resolved_model, content=text, task_type="retrieval_document")
         results.append(r["embedding"])
     return results
 
@@ -143,38 +160,34 @@ _local_model = None  # module-level singleton to avoid reloading
 #     return [v.tolist() for v in vecs]
 
 
-def _embed(texts: List[str]) -> List[List[float]]:
+def _embed(texts: List[str], cfg: Optional[EmbeddingConfig] = None) -> List[List[float]]:
     """Dispatch to the configured embedding provider."""
-    p = settings.EMBEDDING_PROVIDER.lower()
+    p = (cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER).lower()
+    m = cfg.resolved_model() if cfg else settings.EMBEDDING_MODEL
+    k = cfg.resolved_key() if cfg else ""
     if p == "gemini":
-        return _embed_gemini(texts)
+        return _embed_gemini(texts, model=m, api_key=k)
     # if p == "local":
     #     return _embed_local(texts)
-    return _embed_openai(texts)  # default
+    return _embed_openai(texts, model=m, api_key=k)  # default
 
 
-def _check_embedding_config() -> None:
+def _check_embedding_config(cfg: Optional[EmbeddingConfig] = None) -> None:
     """Raise a clear error early if the embedding provider isn't configured."""
-    p = settings.EMBEDDING_PROVIDER.lower()
-    if p == "openai" and not settings.OPENAI_API_KEY:
+    p = (cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER).lower()
+    k = cfg.resolved_key() if cfg else ""
+    if p == "openai" and not (k or settings.OPENAI_API_KEY):
         raise DocumentIngestionError(
-            "Cannot index document: OPENAI_API_KEY is not set.\n\n"
-            "Quick fix — choose one option in your .env:\n"
-            "\n"
-            "  Option A) Add your OpenAI key:\n"
-            "    OPENAI_API_KEY=sk-...\n"
-            "\n"
-            "  Option B) Use Gemini embeddings (free tier available):\n"
-            "    EMBEDDING_PROVIDER=gemini\n"
-            "    GEMINI_API_KEY=your-gemini-key\n"
-            "\n"
-            "  Option C) Use a fully local model (no API key needed):\n"
-            "    EMBEDDING_PROVIDER=local\n"
-            "    (then run: pip install sentence-transformers)"
+            "Cannot index document: no OpenAI API key found.\n\n"
+            "Quick fix — choose one option:\n"
+            "  A) Add a project-level API key in Settings → AI / Embedding Settings\n"
+            "  B) Add OPENAI_API_KEY to .env\n"
+            "  C) Switch EMBEDDING_PROVIDER to 'gemini' or 'local'"
         )
-    if p == "gemini" and not settings.GEMINI_API_KEY:
+    if p == "gemini" and not (k or settings.GEMINI_API_KEY):
         raise DocumentIngestionError(
-            "EMBEDDING_PROVIDER=gemini but GEMINI_API_KEY is not set."
+            "EMBEDDING_PROVIDER=gemini but no Gemini API key found.\n"
+            "Add a project-level key or set GEMINI_API_KEY in .env."
         )
 
 
@@ -240,12 +253,18 @@ def _chunk_text(text: str, size: int = 0, overlap: int = 0) -> List[str]:
 
 # ─────────────────────────────── Public API ──────────────────────────────────
 
-def ingest_document(file_path: str, project_id: str, document_id: str) -> int:
+def ingest_document(
+    file_path: str,
+    project_id: str,
+    document_id: str,
+    cfg: Optional[EmbeddingConfig] = None,
+) -> int:
     """Parse, chunk, embed, and upsert document into Qdrant. Returns chunk count."""
     filename = Path(file_path).name
-    log.info(f"ingest_start file={filename} provider={settings.EMBEDDING_PROVIDER}")
+    provider = cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER
+    log.info(f"ingest_start file={filename} provider={provider}")
 
-    _check_embedding_config()
+    _check_embedding_config(cfg)
 
     try:
         text = _extract_text(file_path)
@@ -262,10 +281,10 @@ def ingest_document(file_path: str, project_id: str, document_id: str) -> int:
     log.info(f"ingest_chunked file={filename} chunks={len(chunks)}")
 
     try:
-        BATCH = 200 if settings.EMBEDDING_PROVIDER.lower() == "openai" else 32
+        BATCH = 200 if provider.lower() == "openai" else 32
         all_embeddings: List[List[float]] = []
         for i in range(0, len(chunks), BATCH):
-            all_embeddings.extend(_embed(chunks[i : i + BATCH]))
+            all_embeddings.extend(_embed(chunks[i : i + BATCH], cfg))
     except DocumentIngestionError:
         raise
     except Exception as exc:
@@ -275,7 +294,7 @@ def ingest_document(file_path: str, project_id: str, document_id: str) -> int:
         from qdrant_client.models import PointStruct
         client = _qdrant()
         col    = _collection_name(project_id)
-        _ensure_collection(client, col)
+        _ensure_collection(client, col, cfg)
 
         points = [
             PointStruct(
@@ -299,13 +318,19 @@ def ingest_document(file_path: str, project_id: str, document_id: str) -> int:
     return len(chunks)
 
 
-def retrieve_context(query: str, project_id: str, n: int = 0) -> List[str]:
+def retrieve_context(
+    query: str,
+    project_id: str,
+    n: int = 0,
+    cfg: Optional[EmbeddingConfig] = None,
+) -> List[str]:
     """Return top-n text chunks most relevant to query. Never raises."""
     k = n or settings.RAG_TOP_K
-    p = settings.EMBEDDING_PROVIDER.lower()
-    if p == "openai" and not settings.OPENAI_API_KEY:
+    p = (cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER).lower()
+    ek = cfg.resolved_key() if cfg else ""
+    if p == "openai" and not (ek or settings.OPENAI_API_KEY):
         return []
-    if p == "gemini" and not settings.GEMINI_API_KEY:
+    if p == "gemini" and not (ek or settings.GEMINI_API_KEY):
         return []
     try:
         client = _qdrant()
@@ -313,7 +338,7 @@ def retrieve_context(query: str, project_id: str, n: int = 0) -> List[str]:
         existing = {c.name for c in client.get_collections().collections}
         if col not in existing:
             return []
-        q_vec = _embed([query])[0]
+        q_vec = _embed([query], cfg)[0]
         hits  = client.search(collection_name=col, query_vector=q_vec, limit=k)
         return [h.payload.get("text", "") for h in hits if h.payload]
     except Exception as exc:
@@ -343,10 +368,10 @@ def delete_document_vectors(project_id: str, document_id: str) -> int:
         return 0
 
 
-def get_index_stats(project_id: str) -> dict:
+def get_index_stats(project_id: str, cfg: Optional[EmbeddingConfig] = None) -> dict:
     """Return Qdrant collection stats for the project."""
-    provider = settings.EMBEDDING_PROVIDER
-    model = settings.EMBEDDING_MODEL
+    provider = cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER
+    model    = cfg.resolved_model()    if cfg else settings.EMBEDDING_MODEL
     if provider == "gemini" and model == "text-embedding-3-small":
         model = "text-embedding-004"
     elif provider == "local" and model == "text-embedding-3-small":

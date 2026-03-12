@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
 from app.core.exceptions import LLMError
-from app.services.document_service import retrieve_context
+from app.services.document_service import retrieve_context, EmbeddingConfig
 
 import logging
 log = logging.getLogger(__name__)
@@ -101,13 +101,24 @@ def _clean_and_parse(raw: str) -> List[Dict[str, Any]]:
     return result
 
 
-def _call_llm(system: str, user: str, provider: str, model: str) -> List[Dict[str, Any]]:
-    """Call Anthropic or OpenAI and parse the response. Simple 1-retry on parse failure."""
+def _call_llm(
+    system: str,
+    user: str,
+    provider: str,
+    model: str,
+    api_key: str = "",
+    api_url: str = "",
+) -> List[Dict[str, Any]]:
+    """Call Anthropic, OpenAI, or Gemini and parse the response. Simple 1-retry on parse failure."""
     if provider == "anthropic":
-        if not settings.ANTHROPIC_API_KEY:
-            raise LLMError("ANTHROPIC_API_KEY is not set")
+        key = api_key or settings.ANTHROPIC_API_KEY
+        if not key:
+            raise LLMError("No Anthropic API key configured (set in project settings or ANTHROPIC_API_KEY env var)")
         import anthropic
-        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        kwargs: Dict[str, Any] = {"api_key": key}
+        if api_url:
+            kwargs["base_url"] = api_url
+        client = anthropic.Anthropic(**kwargs)
         resp = client.messages.create(
             model=model,
             max_tokens=settings.LLM_MAX_TOKENS,
@@ -117,10 +128,14 @@ def _call_llm(system: str, user: str, provider: str, model: str) -> List[Dict[st
         raw = resp.content[0].text
 
     elif provider == "openai":
-        if not settings.OPENAI_API_KEY:
-            raise LLMError("OPENAI_API_KEY is not set")
+        key = api_key or settings.OPENAI_API_KEY
+        if not key:
+            raise LLMError("No OpenAI API key configured (set in project settings or OPENAI_API_KEY env var)")
         import openai
-        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        kwargs = {"api_key": key}
+        if api_url:
+            kwargs["base_url"] = api_url
+        client = openai.OpenAI(**kwargs)
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -129,10 +144,11 @@ def _call_llm(system: str, user: str, provider: str, model: str) -> List[Dict[st
         raw = resp.choices[0].message.content or ""
 
     elif provider == "gemini":
-        if not settings.GEMINI_API_KEY:
-            raise LLMError("GEMINI_API_KEY is not set")
+        key = api_key or settings.GEMINI_API_KEY
+        if not key:
+            raise LLMError("No Gemini API key configured (set in project settings or GEMINI_API_KEY env var)")
         import google.generativeai as genai
-        genai.configure(api_key=settings.GEMINI_API_KEY)
+        genai.configure(api_key=key)
         gemini_model = genai.GenerativeModel(
             model_name=model,
             system_instruction=system,
@@ -164,19 +180,22 @@ def generate_test_cases(
     llm_provider: str = "anthropic",
     llm_model: str = "claude-sonnet-4-6",
     custom_instructions: str = "",
+    api_key: str = "",
+    api_url: str = "",
+    embedding_cfg: Optional["EmbeddingConfig"] = None,
 ) -> List[Dict[str, Any]]:
     """Generate test cases using RAG + LLM. fmt = BDD | MANUAL | BOTH."""
 
     if fmt == "BOTH":
-        bdd    = generate_test_cases(requirement, project_id, "BDD",    count_hint, additional_context, llm_provider, llm_model, custom_instructions)
-        manual = generate_test_cases(requirement, project_id, "MANUAL", count_hint, additional_context, llm_provider, llm_model, custom_instructions)
+        bdd    = generate_test_cases(requirement, project_id, "BDD",    count_hint, additional_context, llm_provider, llm_model, custom_instructions, api_key, api_url, embedding_cfg)
+        manual = generate_test_cases(requirement, project_id, "MANUAL", count_hint, additional_context, llm_provider, llm_model, custom_instructions, api_key, api_url, embedding_cfg)
         for tc in bdd:    tc["format"] = "BDD"
         for tc in manual: tc["format"] = "MANUAL"
         return bdd + manual
 
     # RAG
     query  = f"{requirement['title']} {requirement.get('description', '')}"
-    chunks = retrieve_context(query, project_id)
+    chunks = retrieve_context(query, project_id, cfg=embedding_cfg)
     log.info(f"generation_context chunks={len(chunks)} format={fmt}")
 
     system = BDD_SYSTEM if fmt == "BDD" else MANUAL_SYSTEM
@@ -187,10 +206,10 @@ def generate_test_cases(
 
     # One retry on parse failure
     try:
-        cases = _call_llm(system, user, llm_provider, llm_model)
+        cases = _call_llm(system, user, llm_provider, llm_model, api_key, api_url)
     except LLMError:
         log.warning("llm_parse_failed — retrying once")
-        cases = _call_llm(system, user, llm_provider, llm_model)
+        cases = _call_llm(system, user, llm_provider, llm_model, api_key, api_url)
 
     # Normalise
     for tc in cases:

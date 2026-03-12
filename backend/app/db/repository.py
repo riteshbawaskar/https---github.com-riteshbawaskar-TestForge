@@ -118,6 +118,14 @@ class RequirementRepository:
         )
         return result.scalar_one_or_none()
 
+    async def find_by_issue_id(self, project_id: str, issue_id: int) -> Optional[Requirement]:
+        result = await self.db.execute(
+            select(Requirement)
+            .where(Requirement.project_id == project_id)
+            .where(Requirement.gitlab_issue_id == issue_id)
+        )
+        return result.scalar_one_or_none()
+
     async def create(self, **kwargs) -> Requirement:
         r = Requirement(**kwargs)
         self.db.add(r)
@@ -162,6 +170,13 @@ class TestCaseRepository:
             q = q.where(TestCase.format == fmt.upper())
         result = await self.db.execute(q)
         return result.scalars().all()
+
+    async def create(self, **kwargs) -> TestCase:
+        tc = TestCase(**kwargs)
+        self.db.add(tc)
+        await self.db.flush()
+        await self.db.refresh(tc)
+        return tc
 
     async def bulk_create(self, rows: List[TestCase]) -> None:
         self.db.add_all(rows)

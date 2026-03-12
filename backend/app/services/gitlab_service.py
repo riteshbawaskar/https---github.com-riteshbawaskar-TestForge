@@ -14,7 +14,7 @@ from app.models.models import Project
 import logging
 log = logging.getLogger(__name__)
 
-_ISSUE_URL_RE = re.compile(r"(https?://[^/]+)/(.+?)/-/issues/(\d+)", re.IGNORECASE)
+_ISSUE_URL_RE = re.compile(r"(https?://[^/]+)/(.+?)/-/work-items/(\d+)", re.IGNORECASE)
 
 
 def parse_issue_url(url: str):
@@ -22,7 +22,7 @@ def parse_issue_url(url: str):
     if not m:
         raise GitLabError(
             f"Cannot parse GitLab issue URL: {url!r}. "
-            "Expected: https://gitlab.com/group/project/-/issues/123"
+            "Expected: https://gitlab.com/group/project/-/work-items/123"
         )
     base, path, iid = m.groups()
     return base, path, int(iid)
@@ -63,19 +63,20 @@ class GitLabService:
         except GitlabGetError as exc:
             return {"connected": False, "error": f"Project '{self.path}' not found: {exc}"}
 
-    def fetch_issue(self, issue_url: str) -> Dict[str, Any]:
-        _, project_path, issue_iid = parse_issue_url(issue_url)
+    def fetch_issue(self, issue_id: int) -> Dict[str, Any]:
+        if not self.path:
+            raise GitLabError("No project path configured")
         try:
-            gl_proj = self.gl.projects.get(project_path)
-            issue   = gl_proj.issues.get(issue_iid)
+            gl_proj = self.gl.projects.get(self.path)
+            issue   = gl_proj.issues.get(issue_id)
         except GitlabGetError as exc:
-            raise GitLabError(f"Issue {issue_iid} not found in {project_path!r}: {exc}") from exc
+            raise GitLabError(f"Issue #{issue_id} not found in {self.path!r}: {exc}") from exc
         except Exception as exc:
             raise GitLabError(f"Failed to fetch issue: {exc}") from exc
 
         return {
             "gitlab_issue_id":  issue.iid,
-            "gitlab_issue_url": issue_url,
+            "gitlab_issue_url": issue.web_url,
             "title":       issue.title,
             "description": issue.description or "",
             "labels":      ",".join(issue.labels) if issue.labels else "",

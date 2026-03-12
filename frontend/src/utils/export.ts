@@ -3,10 +3,122 @@
  * Word export uses the `docx` npm package.
  * Excel export uses SheetJS (xlsx).
  */
-import { Document, Paragraph, TextRun, HeadingLevel, Packer } from "docx";
+import { Document, Paragraph, TextRun, HeadingLevel, Packer, AlignmentType } from "docx";
 import * as XLSX from "xlsx";
 import type { TestCase, Requirement } from "../types";
 
+// ─── Word helpers ───
+
+/** Converts raw Gherkin BDD content into formatted Word paragraphs.
+ *  Feature/Scenario lines are bold; Given/When/Then/And/But are indented
+ *  with the keyword bolded.
+ */
+function bddToWordParagraphs(content: string): Paragraph[] {
+  const paragraphs: Paragraph[] = [];
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      paragraphs.push(new Paragraph({ text: "" }));
+      continue;
+    }
+    const stepMatch = trimmed.match(/^(Given|When|Then|And|But)\b(.*)/i);
+    const blockMatch = trimmed.match(/^(Feature|Scenario|Background|Scenario Outline|Examples)\b(.*)/i);
+    if (stepMatch) {
+      paragraphs.push(
+        new Paragraph({
+          indent: { left: 720 },
+          children: [
+            new TextRun({ text: stepMatch[1], bold: true }),
+            new TextRun({ text: stepMatch[2] }),
+          ],
+        })
+      );
+    } else if (blockMatch) {
+      paragraphs.push(
+        new Paragraph({
+          children: [
+            new TextRun({ text: blockMatch[1], bold: true }),
+            new TextRun({ text: blockMatch[2] }),
+          ],
+        })
+      );
+    } else if (trimmed.startsWith("|")) {
+      // Gherkin table row — indent like steps
+      paragraphs.push(
+        new Paragraph({
+          indent: { left: 1080 },
+          children: [new TextRun({ text: trimmed, font: "Courier New", size: 18 })],
+        })
+      );
+    } else {
+      paragraphs.push(new Paragraph({ text: trimmed }));
+    }
+  }
+  return paragraphs;
+}
+
+/** Converts JSON manual test case content into formatted Word paragraphs.
+ *  Preconditions and test data are shown as labeled sections; steps are
+ *  numbered with Action indented and Expected Result double-indented.
+ */
+function manualToWordParagraphs(content: string): Paragraph[] {
+  let data: {
+    preconditions?: string;
+    test_data?: string;
+    steps?: { action: string; expected: string }[];
+  } = {};
+  try { data = JSON.parse(content); } catch { /* fall back to empty */ }
+
+  const paragraphs: Paragraph[] = [];
+
+  if (data.preconditions) {
+    paragraphs.push(
+      new Paragraph({ children: [new TextRun({ text: "Preconditions:", bold: true })] })
+    );
+    paragraphs.push(
+      new Paragraph({ indent: { left: 720 }, text: data.preconditions })
+    );
+    paragraphs.push(new Paragraph({ text: "" }));
+  }
+
+  if (data.test_data) {
+    paragraphs.push(
+      new Paragraph({ children: [new TextRun({ text: "Test Data:", bold: true })] })
+    );
+    paragraphs.push(
+      new Paragraph({ indent: { left: 720 }, text: data.test_data })
+    );
+    paragraphs.push(new Paragraph({ text: "" }));
+  }
+
+  if (data.steps?.length) {
+    paragraphs.push(
+      new Paragraph({ children: [new TextRun({ text: "Steps:", bold: true })] })
+    );
+    data.steps.forEach((step, i) => {
+      paragraphs.push(
+        new Paragraph({
+          indent: { left: 720 },
+          children: [
+            new TextRun({ text: `${i + 1}.  Action: `, bold: true }),
+            new TextRun({ text: step.action }),
+          ],
+        })
+      );
+      paragraphs.push(
+        new Paragraph({
+          indent: { left: 1080 },
+          children: [
+            new TextRun({ text: "Expected: ", bold: true, color: "1D6F42" }),
+            new TextRun({ text: step.expected }),
+          ],
+        })
+      );
+    });
+  }
+
+  return paragraphs;
+}
 
 // ─── Word Export ───
 export async function exportToWord(requirement: Requirement, testCases: TestCase[]) {
@@ -21,7 +133,7 @@ export async function exportToWord(requirement: Requirement, testCases: TestCase
       ],
     }),
     new Paragraph({ text: "" }),
-    new Paragraph({ text: tc.content }),
+    ...(tc.format === "BDD" ? bddToWordParagraphs(tc.content) : manualToWordParagraphs(tc.content)),
     new Paragraph({ text: "" }),
   ]);
 

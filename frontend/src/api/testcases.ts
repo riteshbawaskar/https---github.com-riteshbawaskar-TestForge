@@ -8,8 +8,8 @@ export const requirementsApi = {
   get: (id: string) =>
     api.get<Requirement>(`/requirements/${id}`).then(r => r.data),
 
-  fetch: (projectId: string, gitlab_issue_url: string) =>
-    api.post<Requirement>("/requirements/fetch", { project_id: projectId, gitlab_issue_url })
+  fetch: (projectId: string, gitlab_issue_id: number) =>
+    api.post<Requirement>("/requirements/fetch", { project_id: projectId, gitlab_issue_id })
       .then(r => r.data),
 
   delete: (id: string) =>
@@ -26,6 +26,16 @@ export const testCasesApi = {
     api.get<TestCase[]>(`/testcases/requirement/${requirementId}`, {
       params: format ? { format } : {},
     }).then(r => r.data),
+
+  create: (data: {
+    requirement_id: string;
+    title: string;
+    format: "BDD" | "MANUAL";
+    content: string;
+    priority: string;
+    tags?: string;
+    scenario_type?: string;
+  }) => api.post<TestCase>("/testcases", data).then(r => r.data),
 
   generate: (payload: {
     requirement_id: string;

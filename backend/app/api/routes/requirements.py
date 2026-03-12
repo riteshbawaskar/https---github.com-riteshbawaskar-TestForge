@@ -103,13 +103,13 @@ async def fetch_requirement(
     except NotFoundError as exc:
         raise HTTPException(404, str(exc))
 
-    existing = await req_repo.find_by_issue_url(payload.project_id, payload.gitlab_issue_url)
+    existing = await req_repo.find_by_issue_id(payload.project_id, payload.gitlab_issue_id)
     if existing:
         return existing
 
     from app.services.gitlab_service import GitLabService
     try:
-        data = GitLabService(project).fetch_issue(payload.gitlab_issue_url)
+        data = GitLabService(project).fetch_issue(payload.gitlab_issue_id)
     except GitLabError as exc:
         raise HTTPException(422, str(exc))
 

@@ -15,9 +15,37 @@ from app.api.deps import get_job_repo, get_requirement_repo, get_testcase_repo
 from app.core.exceptions import NotFoundError
 from app.db.repository import JobRepository, RequirementRepository, TestCaseRepository
 from app.db.session import get_db
-from app.schemas.schemas import ExportRequest, GenerateRequest, JobRead, TestCaseRead, TestCaseUpdate
+from app.schemas.schemas import ExportRequest, GenerateRequest, JobRead, TestCaseCreate, TestCaseRead, TestCaseUpdate
 
 router = APIRouter()
+
+
+@router.post("", response_model=TestCaseRead, status_code=201)
+async def create_test_case(
+    payload: TestCaseCreate,
+    req_repo: RequirementRepository = Depends(get_requirement_repo),
+    tc_repo: TestCaseRepository = Depends(get_testcase_repo),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually create a test case."""
+    try:
+        await req_repo.get_or_raise(payload.requirement_id)
+    except NotFoundError as exc:
+        raise HTTPException(404, str(exc))
+
+    tc = await tc_repo.create(
+        requirement_id=payload.requirement_id,
+        title=payload.title,
+        format=payload.format.upper(),
+        content=payload.content,
+        priority=payload.priority.upper(),
+        tags=payload.tags,
+        scenario_type=payload.scenario_type,
+        edited=True,
+    )
+    await db.commit()
+    await db.refresh(tc)
+    return tc
 
 
 @router.post("/generate", response_model=JobRead, status_code=202)

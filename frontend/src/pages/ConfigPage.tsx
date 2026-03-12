@@ -29,11 +29,29 @@ const PROVIDER_DEFAULTS: Record<string, string> = {
   gemini: "gemini-1.5-pro",
 };
 
+const EMBEDDING_MODELS: Record<string, { label: string; value: string }[]> = {
+  openai: [
+    { label: "text-embedding-3-small (recommended)", value: "text-embedding-3-small" },
+    { label: "text-embedding-3-large", value: "text-embedding-3-large" },
+    { label: "text-embedding-ada-002 (legacy)", value: "text-embedding-ada-002" },
+  ],
+  gemini: [
+    { label: "text-embedding-004 (recommended)", value: "models/text-embedding-004" },
+    { label: "gemini-embedding-001", value: "gemini-embedding-001" },
+  ],
+};
+const EMBEDDING_DEFAULTS: Record<string, string> = {
+  openai: "text-embedding-3-small",
+  gemini: "models/text-embedding-004",
+};
+
 function emptyForm() {
   return {
     name: "", description: "",
     gitlabUrl: "https://gitlab.com", gitlabToken: "", gitlabProject: "",
     defaultFormat: "BDD", llmProvider: "anthropic", llmModel: "claude-sonnet-4-6",
+    llmApiKey: "", llmApiUrl: "",
+    embeddingProvider: "openai", embeddingModel: "text-embedding-3-small", embeddingApiKey: "",
     detailLevel: "detailed", customInstructions: "",
     includeLabels: "", excludeLabels: "", issueState: "opened", maxIssues: "100",
   };
@@ -49,6 +67,11 @@ function toForm(p: Project) {
     defaultFormat: p.default_format ?? "BDD",
     llmProvider: p.llm_provider ?? "anthropic",
     llmModel: p.llm_model ?? "claude-sonnet-4-6",
+    llmApiKey: "",  // never pre-fill a key; user must re-enter to change
+    llmApiUrl: p.llm_api_url ?? "",
+    embeddingProvider: p.embedding_provider ?? "openai",
+    embeddingModel: p.embedding_model ?? "text-embedding-3-small",
+    embeddingApiKey: "",
     detailLevel: p.detail_level ?? "detailed",
     customInstructions: p.custom_instructions ?? "",
     includeLabels: p.label_include ?? "",
@@ -62,11 +85,13 @@ export default function ConfigPage() {
   const nav = useNavigate();
   const { activeProject, setActiveProject, addProject, updateProject } = useProjectStore();
 
-  const [form, setForm]             = useState(activeProject ? toForm(activeProject) : emptyForm());
-  const [saving, setSaving]         = useState(false);
-  const [showToken, setShowToken]   = useState(false);
-  const [connStatus, setConnStatus] = useState<"ok" | "fail" | "testing" | null>(null);
-  const [connResult, setConnResult] = useState<GitLabConnectionResult | null>(null);
+  const [form, setForm]               = useState(activeProject ? toForm(activeProject) : emptyForm());
+  const [saving, setSaving]           = useState(false);
+  const [showToken, setShowToken]     = useState(false);
+  const [showLlmKey, setShowLlmKey]   = useState(false);
+  const [showEmbKey, setShowEmbKey]   = useState(false);
+  const [connStatus, setConnStatus]   = useState<"ok" | "fail" | "testing" | null>(null);
+  const [connResult, setConnResult]   = useState<GitLabConnectionResult | null>(null);
   const isNew = !activeProject;
 
   // Sync form when active project changes (e.g. user switches project from sidebar)
@@ -92,6 +117,9 @@ export default function ConfigPage() {
         default_format: form.defaultFormat,
         llm_model: form.llmModel,
         llm_provider: form.llmProvider,
+        llm_api_url: form.llmApiUrl || null,
+        embedding_provider: form.embeddingProvider || null,
+        embedding_model: form.embeddingModel || null,
         detail_level: form.detailLevel,
         custom_instructions: form.customInstructions,
         label_include: form.includeLabels,
@@ -99,7 +127,9 @@ export default function ConfigPage() {
         issue_state: form.issueState,
         max_issues: Number(form.maxIssues),
       };
-      if (form.gitlabToken) payload.gitlab_token = form.gitlabToken;
+      if (form.gitlabToken)   payload.gitlab_token    = form.gitlabToken;
+      if (form.llmApiKey)     payload.llm_api_key     = form.llmApiKey;
+      if (form.embeddingApiKey) payload.embedding_api_key = form.embeddingApiKey;
 
       let updated: Project;
       if (activeProject?.id) {
@@ -208,30 +238,68 @@ export default function ConfigPage() {
 
           {/* LLM Settings */}
           <div className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
-            <SectionHead title="AI / LLM Settings" subtitle="Choose the model used to generate test cases." />
+            <SectionHead title="AI / LLM Settings" subtitle="Model used to generate test cases." />
             <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
-                <select
-                  value={form.llmProvider}
-                  onChange={e => {
-                    const p = e.target.value;
-                    setForm(f => ({ ...f, llmProvider: p, llmModel: PROVIDER_DEFAULTS[p] ?? f.llmModel }));
-                  }}
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 bg-white">
-                  <option value="anthropic">Anthropic (Claude)</option>
-                  <option value="openai">OpenAI (GPT)</option>
-                  <option value="gemini">Google (Gemini)</option>
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
+                  <input
+                    list="llm-providers"
+                    value={form.llmProvider}
+                    onChange={e => {
+                      const p = e.target.value;
+                      setForm(f => ({ ...f, llmProvider: p, llmModel: PROVIDER_DEFAULTS[p] ?? f.llmModel }));
+                    }}
+                    placeholder="anthropic / openai / gemini"
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 bg-white"
+                  />
+                  <datalist id="llm-providers">
+                    <option value="anthropic">Anthropic (Claude)</option>
+                    <option value="openai">OpenAI (GPT)</option>
+                    <option value="gemini">Google (Gemini)</option>
+                  </datalist>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
+                  <input
+                    list="llm-models"
+                    value={form.llmModel}
+                    onChange={e => setForm(f => ({ ...f, llmModel: e.target.value }))}
+                    placeholder="e.g. claude-sonnet-4-6"
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  <datalist id="llm-models">
+                    {(MODELS[form.llmProvider] ?? []).map(m => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </datalist>
+                </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
-                <select value={form.llmModel} onChange={set("llmModel")}
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 bg-white">
-                  {(MODELS[form.llmProvider] ?? []).map(m => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-                </select>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  API Key
+                  {activeProject?.llm_api_key_set && <span className="ml-2 text-xs text-green-600 font-normal">✔ key stored</span>}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showLlmKey ? "text" : "password"}
+                    value={form.llmApiKey} onChange={set("llmApiKey")}
+                    placeholder={activeProject?.llm_api_key_set ? "Enter new key to replace…" : "sk-… / sk-ant-… / AIza…"}
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 pr-10 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 font-mono"
+                  />
+                  <button onClick={() => setShowLlmKey(s => !s)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-sm">
+                    {showLlmKey ? "🙈" : "👁"}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">Stored encrypted · Overrides global env key for this project</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Base URL <span className="font-normal text-gray-400">(optional)</span></label>
+                <input value={form.llmApiUrl} onChange={set("llmApiUrl")}
+                  placeholder="https://api.openai.com/v1 — leave blank for default"
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20" />
+                <p className="text-xs text-gray-400 mt-1">For Azure OpenAI, Ollama, or other compatible endpoints</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Custom Instructions</label>
@@ -241,6 +309,66 @@ export default function ConfigPage() {
                   rows={3}
                   className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 resize-none"
                 />
+              </div>
+            </div>
+          </div>
+
+          {/* Embedding / RAG Settings */}
+          <div className="bg-white border border-gray-200 rounded-lg p-5 shadow-sm">
+            <SectionHead title="Embedding / RAG Settings" subtitle="Controls how documents are indexed and retrieved for test generation." />
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Embedding Provider</label>
+                  <input
+                    list="emb-providers"
+                    value={form.embeddingProvider}
+                    onChange={e => {
+                      const p = e.target.value;
+                      setForm(f => ({ ...f, embeddingProvider: p, embeddingModel: EMBEDDING_DEFAULTS[p] ?? f.embeddingModel }));
+                    }}
+                    placeholder="openai / gemini"
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 bg-white"
+                  />
+                  <datalist id="emb-providers">
+                    <option value="openai">OpenAI</option>
+                    <option value="gemini">Google Gemini</option>
+                  </datalist>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Embedding Model</label>
+                  <input
+                    list="emb-models"
+                    value={form.embeddingModel}
+                    onChange={e => setForm(f => ({ ...f, embeddingModel: e.target.value }))}
+                    placeholder="e.g. text-embedding-3-small"
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  <datalist id="emb-models">
+                    {(EMBEDDING_MODELS[form.embeddingProvider] ?? []).map(m => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Embedding API Key
+                  {activeProject?.embedding_api_key_set && <span className="ml-2 text-xs text-green-600 font-normal">✔ key stored</span>}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showEmbKey ? "text" : "password"}
+                    value={form.embeddingApiKey} onChange={set("embeddingApiKey")}
+                    placeholder={activeProject?.embedding_api_key_set ? "Enter new key to replace…" : "Leave blank to share the LLM API key"}
+                    className="w-full border border-gray-300 rounded-md px-3 py-2 pr-10 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 font-mono"
+                  />
+                  <button onClick={() => setShowEmbKey(s => !s)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-sm">
+                    {showEmbKey ? "🙈" : "👁"}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">Stored encrypted · Falls back to LLM key or global env key if blank</p>
               </div>
             </div>
           </div>

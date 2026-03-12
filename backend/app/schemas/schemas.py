@@ -17,6 +17,11 @@ class ProjectCreate(BaseModel):
     gitlab_project_path: Optional[str]   = None
     llm_model: str                       = "claude-sonnet-4-6"
     llm_provider: str                    = "anthropic"
+    llm_api_key: Optional[str]           = Field(None, description="Per-project LLM key — encrypted before storage")
+    llm_api_url: Optional[str]           = None
+    embedding_provider: Optional[str]    = None
+    embedding_model: Optional[str]       = None
+    embedding_api_key: Optional[str]     = Field(None, description="Per-project embedding key — encrypted before storage")
     custom_instructions: Optional[str]   = None
     default_format: str                  = "BDD"
     detail_level: str                    = "detailed"
@@ -34,6 +39,11 @@ class ProjectUpdate(BaseModel):
     gitlab_project_path: Optional[str]  = None
     llm_model: Optional[str]            = None
     llm_provider: Optional[str]         = None
+    llm_api_key: Optional[str]          = None
+    llm_api_url: Optional[str]          = None
+    embedding_provider: Optional[str]   = None
+    embedding_model: Optional[str]      = None
+    embedding_api_key: Optional[str]    = None
     custom_instructions: Optional[str]  = None
     default_format: Optional[str]       = None
     detail_level: Optional[str]         = None
@@ -51,6 +61,11 @@ class ProjectRead(BaseModel):
     gitlab_project_path: Optional[str]
     llm_model: str
     llm_provider: str
+    llm_api_url: Optional[str]
+    llm_api_key_set: bool = False        # True if a per-project key is stored
+    embedding_provider: Optional[str]
+    embedding_model: Optional[str]
+    embedding_api_key_set: bool = False  # True if a per-project embedding key is stored
     custom_instructions: Optional[str]
     default_format: str
     detail_level: str
@@ -62,6 +77,18 @@ class ProjectRead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        """Inject computed `*_key_set` booleans before standard validation."""
+        if hasattr(obj, "llm_api_key_encrypted"):
+            # Convert ORM object to dict for mutation
+            from sqlalchemy.orm import InstanceState  # guard
+            d = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+            d["llm_api_key_set"]       = bool(obj.llm_api_key_encrypted)
+            d["embedding_api_key_set"] = bool(obj.embedding_api_key_encrypted)
+            return super().model_validate(d, **kwargs)
+        return super().model_validate(obj, **kwargs)
 
 
 class GitLabConnectionResult(BaseModel):
@@ -99,7 +126,7 @@ class DocumentStats(BaseModel):
 # ─────────────────────────────── Requirement ─────────────────────────────────
 
 class RequirementFetch(BaseModel):
-    gitlab_issue_url: str
+    gitlab_issue_id: int
     project_id: str
 
 
@@ -168,6 +195,16 @@ class JobRead(BaseModel):
 
 
 # ─────────────────────────────── Export ──────────────────────────────────────
+
+class TestCaseCreate(BaseModel):
+    requirement_id: str
+    title: str                    = Field(..., min_length=1)
+    format: str                   = "BDD"           # BDD | MANUAL
+    content: str                  = ""
+    priority: str                 = "MEDIUM"        # HIGH | MEDIUM | LOW
+    tags: Optional[str]           = None
+    scenario_type: Optional[str]  = None
+
 
 class ExportRequest(BaseModel):
     project_id: Optional[str]     = None

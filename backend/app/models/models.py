@@ -36,9 +36,15 @@ class Project(Base):
     gitlab_token_encrypted: Mapped[str | None] = mapped_column(Text)
     gitlab_project_path: Mapped[str | None] = mapped_column(String(512))
     # LLM
-    llm_model: Mapped[str]                  = mapped_column(String(100), default="claude-sonnet-4-6")
-    llm_provider: Mapped[str]               = mapped_column(String(50),  default="anthropic")
-    custom_instructions: Mapped[str | None] = mapped_column(Text)
+    llm_model: Mapped[str]                        = mapped_column(String(100), default="claude-sonnet-4-6")
+    llm_provider: Mapped[str]                     = mapped_column(String(50),  default="anthropic")
+    llm_api_key_encrypted: Mapped[str | None]     = mapped_column(Text)           # per-project key override
+    llm_api_url: Mapped[str | None]               = mapped_column(String(512))    # custom base URL (Azure, Ollama…)
+    # Embedding
+    embedding_provider: Mapped[str | None]        = mapped_column(String(50))     # overrides global EMBEDDING_PROVIDER
+    embedding_model: Mapped[str | None]           = mapped_column(String(100))    # overrides global EMBEDDING_MODEL
+    embedding_api_key_encrypted: Mapped[str | None] = mapped_column(Text)         # per-project embedding key override
+    custom_instructions: Mapped[str | None]       = mapped_column(Text)
     # Test generation defaults
     default_format: Mapped[str]             = mapped_column(String(20),  default="BDD")
     detail_level: Mapped[str]               = mapped_column(String(50),  default="detailed")

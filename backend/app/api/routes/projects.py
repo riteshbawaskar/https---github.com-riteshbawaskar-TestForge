@@ -20,9 +20,13 @@ async def create_project(
     repo: ProjectRepository = Depends(get_project_repo),
     db: AsyncSession = Depends(get_db),
 ):
-    data = payload.model_dump(exclude={"gitlab_token"})
+    data = payload.model_dump(exclude={"gitlab_token", "llm_api_key", "embedding_api_key"})
     if payload.gitlab_token:
         data["gitlab_token_encrypted"] = encrypt_token(payload.gitlab_token)
+    if payload.llm_api_key:
+        data["llm_api_key_encrypted"] = encrypt_token(payload.llm_api_key)
+    if payload.embedding_api_key:
+        data["embedding_api_key_encrypted"] = encrypt_token(payload.embedding_api_key)
     project = await repo.create(**data)
     await db.commit()
     await db.refresh(project)
@@ -54,11 +58,18 @@ async def update_project(
     except NotFoundError as exc:
         raise HTTPException(404, str(exc))
 
-    for k, v in payload.model_dump(exclude_none=True, exclude={"gitlab_token"}).items():
+    for k, v in payload.model_dump(
+        exclude_none=True,
+        exclude={"gitlab_token", "llm_api_key", "embedding_api_key"},
+    ).items():
         setattr(project, k, v)
 
     if payload.gitlab_token:
         project.gitlab_token_encrypted = encrypt_token(payload.gitlab_token)
+    if payload.llm_api_key:
+        project.llm_api_key_encrypted = encrypt_token(payload.llm_api_key)
+    if payload.embedding_api_key:
+        project.embedding_api_key_encrypted = encrypt_token(payload.embedding_api_key)
 
     await db.commit()
     await db.refresh(project)

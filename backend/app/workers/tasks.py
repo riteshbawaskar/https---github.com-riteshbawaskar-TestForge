@@ -26,7 +26,9 @@ async def run_generate_test_cases(
     from app.db.session import AsyncSessionLocal
     from app.models.models import GenerationJob, Project, Requirement, TestCase
     from app.services.generation_service import generate_test_cases
+    from app.services.document_service import EmbeddingConfig
     from app.core.exceptions import LLMError, DocumentIngestionError
+    from app.core.security import decrypt_token
 
     async with AsyncSessionLocal() as db:
         job = await db.get(GenerationJob, job_id)
@@ -62,6 +64,15 @@ async def run_generate_test_cases(
                 "labels":      req.labels or "",
             }
 
+            # Resolve per-project API credentials (fall back to env vars in the service)
+            llm_api_key = decrypt_token(project.llm_api_key_encrypted) if project.llm_api_key_encrypted else ""
+            emb_api_key = decrypt_token(project.embedding_api_key_encrypted) if project.embedding_api_key_encrypted else ""
+            embedding_cfg = EmbeddingConfig(
+                provider=project.embedding_provider or "",
+                model=project.embedding_model or "",
+                api_key=emb_api_key,
+            )
+
             await _update("RUNNING", f"Calling {project.llm_model}…")
             await asyncio.sleep(0)
 
@@ -78,6 +89,9 @@ async def run_generate_test_cases(
                     llm_provider=project.llm_provider,
                     llm_model=project.llm_model,
                     custom_instructions=project.custom_instructions or "",
+                    api_key=llm_api_key,
+                    api_url=project.llm_api_url or "",
+                    embedding_cfg=embedding_cfg,
                 ),
             )
 
@@ -123,12 +137,14 @@ async def run_index_document(
 ) -> None:
     """Async background task: parse and index a document into Qdrant."""
     from app.db.session import AsyncSessionLocal
-    from app.models.models import Document
-    from app.services.document_service import ingest_document
+    from app.models.models import Document, Project
+    from app.services.document_service import ingest_document, EmbeddingConfig
     from app.core.exceptions import DocumentIngestionError
+    from app.core.security import decrypt_token
 
     async with AsyncSessionLocal() as db:
-        doc = await db.get(Document, document_id)
+        doc     = await db.get(Document, document_id)
+        project = await db.get(Project, project_id)
         if not doc:
             log.error(f"document_not_found doc_id={document_id}")
             return
@@ -136,11 +152,18 @@ async def run_index_document(
         doc.status = "INDEXING"
         await db.commit()
 
+        emb_api_key = decrypt_token(project.embedding_api_key_encrypted) if (project and project.embedding_api_key_encrypted) else ""
+        embedding_cfg = EmbeddingConfig(
+            provider=project.embedding_provider or "" if project else "",
+            model=project.embedding_model or "" if project else "",
+            api_key=emb_api_key,
+        ) if project else None
+
         try:
             loop = asyncio.get_event_loop()
             chunk_count = await loop.run_in_executor(
                 None,
-                lambda: ingest_document(file_path, project_id, document_id),
+                lambda: ingest_document(file_path, project_id, document_id, embedding_cfg),
             )
             doc.chunk_count = chunk_count
             doc.status      = "INDEXED"

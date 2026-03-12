@@ -13,7 +13,18 @@ function parseManual(content: string): ManualContent | null {
   return null;
 }
 
-interface Props { open: boolean; onClose: () => void; testCase: TestCase | null; onSave: (tc: TestCase) => void; }
+const BDD_TEMPLATE = `Feature: <feature name>\n\n  Scenario: <scenario title>\n    Given <precondition>\n    When <action>\n    Then <expected result>`;
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  /** Existing test case (edit mode) or null (new mode) */
+  testCase: TestCase | null;
+  requirementId?: string;
+  initialFormat?: "BDD" | "MANUAL";
+  onSave: (tc: TestCase) => void;
+  onCreate?: (data: { requirement_id: string; title: string; format: "BDD" | "MANUAL"; content: string; priority: string; tags?: string; scenario_type?: string }) => void;
+}
 
 const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div className="mb-4">
@@ -22,11 +33,14 @@ const Field = ({ label, children }: { label: string; children: React.ReactNode }
   </div>
 );
 
-export default function EditTestCaseModal({ open, onClose, testCase, onSave }: Props) {
+export default function EditTestCaseModal({ open, onClose, testCase, requirementId, initialFormat = "BDD", onSave, onCreate }: Props) {
+  const isNew = testCase === null;
+  const [newFmt, setNewFmt] = useState<"BDD" | "MANUAL">(initialFormat);
   const [form, setForm] = useState({ title: "", content: "", priority: "MEDIUM", scenario_type: "positive", tags: "" });
   const [manual, setManual] = useState<ManualContent | null>(null);
 
   useEffect(() => {
+    if (!open) return;
     if (testCase) {
       const parsed = parseManual(testCase.content);
       setManual(parsed
@@ -37,15 +51,45 @@ export default function EditTestCaseModal({ open, onClose, testCase, onSave }: P
         title: testCase.title, content: testCase.content,
         priority: testCase.priority, scenario_type: testCase.scenario_type ?? "positive", tags: testCase.tags ?? "",
       });
+    } else {
+      setNewFmt(initialFormat);
+      setForm({ title: "", content: initialFormat === "BDD" ? BDD_TEMPLATE : "", priority: "MEDIUM", scenario_type: "positive", tags: "" });
+      setManual(initialFormat === "MANUAL" ? { preconditions: "", test_data: "", steps: [{ action: "", expected: "" }] } : null);
     }
-  }, [testCase?.id]);
+  }, [open, testCase?.id]);
 
-  if (!open || !testCase) return null;
+  // When format changes in new mode, switch editor type
+  useEffect(() => {
+    if (!isNew) return;
+    if (newFmt === "MANUAL") {
+      setManual({ preconditions: "", test_data: "", steps: [{ action: "", expected: "" }] });
+      setForm(f => ({ ...f, content: "" }));
+    } else {
+      setManual(null);
+      setForm(f => ({ ...f, content: BDD_TEMPLATE }));
+    }
+  }, [newFmt]);
+
+  if (!open) return null;
+  if (isNew && !requirementId) return null;
 
   const handleSave = () => {
+    if (!form.title.trim()) { return; }
     const content = manual ? JSON.stringify(manual, null, 2) : form.content;
-    onSave({ ...testCase, ...form, content, priority: form.priority as "HIGH"|"MEDIUM"|"LOW", scenario_type: form.scenario_type as TestCase["scenario_type"], edited: true });
-    toast("Test case saved");
+    if (isNew) {
+      onCreate?.({
+        requirement_id: requirementId!,
+        title: form.title,
+        format: newFmt,
+        content,
+        priority: form.priority,
+        tags: form.tags || undefined,
+        scenario_type: form.scenario_type || undefined,
+      });
+    } else {
+      onSave({ ...testCase!, ...form, content, priority: form.priority as "HIGH"|"MEDIUM"|"LOW", scenario_type: form.scenario_type as TestCase["scenario_type"], edited: true });
+    }
+    toast(isNew ? "Test case created" : "Test case saved");
     onClose();
   };
 
@@ -64,12 +108,27 @@ export default function EditTestCaseModal({ open, onClose, testCase, onSave }: P
       <div className="relative bg-white rounded-xl shadow-2xl w-[780px] max-h-[90vh] flex flex-col mx-4">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
           <div>
-            <h2 className="text-base font-semibold text-gray-900">Edit Test Case</h2>
-            <p className="text-xs text-gray-500 mt-0.5 truncate max-w-sm">{testCase.title}</p>
+            <h2 className="text-base font-semibold text-gray-900">{isNew ? "New Test Case" : "Edit Test Case"}</h2>
+            <p className="text-xs text-gray-500 mt-0.5 truncate max-w-sm">{isNew ? "Add a test case manually" : testCase!.title}</p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
         </div>
         <div className="overflow-y-auto flex-1 px-6 py-4">
+          {isNew && (
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Format</label>
+              <div className="flex gap-2">
+                {(["BDD", "MANUAL"] as const).map(f => (
+                  <button key={f} onClick={() => setNewFmt(f)}
+                    className={`px-4 py-1.5 rounded-md border text-sm font-medium transition-colors ${
+                      newFmt === f ? "bg-blue-50 text-blue-700 border-blue-300" : "border-gray-300 text-gray-600 hover:bg-gray-50"
+                    }`}>
+                    {f === "BDD" ? "BDD / Gherkin" : "Manual Steps"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <Field label="Title">
             <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
               className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20" />
@@ -184,7 +243,7 @@ export default function EditTestCaseModal({ open, onClose, testCase, onSave }: P
         </div>
         <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-100 bg-gray-50 rounded-b-xl">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSave}>Save Changes</Button>
+          <Button onClick={handleSave} disabled={!form.title.trim()}>{isNew ? "Create" : "Save Changes"}</Button>
         </div>
       </div>
     </div>

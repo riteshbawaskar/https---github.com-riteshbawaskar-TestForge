@@ -46,10 +46,6 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
     RAG_TOP_K: int = 5
-    
-    CHUNK_SIZE: int = 500
-    CHUNK_OVERLAP: int = 50
-    RAG_TOP_K: int = 5
 
     # ── Encryption — simple XOR + base64 (good enough for local dev) ──────
     # 32-char secret used to obfuscate stored tokens.
