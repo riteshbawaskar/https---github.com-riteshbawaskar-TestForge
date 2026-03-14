@@ -1,43 +1,46 @@
-"""Simple reversible encryption for storing GitLab/API tokens.
+"""Fernet (AES-128-CBC + HMAC-SHA256) encryption for storing GitLab/API tokens.
 
-Uses XOR with a repeated key + base64 encoding.  This is obfuscation, not
-strong encryption — it keeps tokens out of plaintext in the DB while keeping
-the implementation dependency-free (no cryptography package needed).
+Tokens encrypted with the previous XOR scheme are transparently decrypted on
+first read via the legacy fallback; new writes always use Fernet.
 
-For production you can swap _encrypt/_decrypt for Fernet or AWS KMS without
-changing any callers.
+Requires: cryptography>=41.0 (added to requirements.txt)
 """
 from __future__ import annotations
 
 import base64
+import hashlib
 
 
-def _key_bytes() -> bytes:
+def _fernet():
+    """Return a Fernet instance keyed from ENCRYPTION_SECRET."""
+    from cryptography.fernet import Fernet
     from app.core.config import settings
-    secret = settings.ENCRYPTION_SECRET
-    # Ensure we have at least 32 bytes of key material
-    key = (secret * 4).encode("utf-8")[:32]
-    return key
+    key_bytes = hashlib.sha256(settings.ENCRYPTION_SECRET.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(key_bytes))
+
+
+def _xor_decrypt_legacy(ciphertext: str) -> str:
+    """Decrypt tokens stored by the old XOR scheme (backward compatibility)."""
+    from app.core.config import settings
+    key = (settings.ENCRYPTION_SECRET * 4).encode("utf-8")[:32]
+    xored = base64.urlsafe_b64decode(ciphertext.encode("ascii"))
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(xored)).decode("utf-8")
 
 
 def encrypt_token(plaintext: str) -> str:
-    """XOR-encrypt plaintext and return a base64-encoded string."""
     if not plaintext:
         return ""
-    data = plaintext.encode("utf-8")
-    key  = _key_bytes()
-    xored = bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
-    return base64.urlsafe_b64encode(xored).decode("ascii")
+    return _fernet().encrypt(plaintext.encode()).decode()
 
 
 def decrypt_token(ciphertext: str) -> str:
-    """Decode base64 and XOR-decrypt back to plaintext."""
     if not ciphertext:
         return ""
     try:
-        xored = base64.urlsafe_b64decode(ciphertext.encode("ascii"))
-    except Exception as exc:
-        raise ValueError(f"Invalid ciphertext (bad base64): {exc}") from exc
-    key = _key_bytes()
-    data = bytes(b ^ key[i % len(key)] for i, b in enumerate(xored))
-    return data.decode("utf-8")
+        return _fernet().decrypt(ciphertext.encode()).decode()
+    except Exception:
+        # Fallback: try legacy XOR scheme for tokens stored before the Fernet upgrade
+        try:
+            return _xor_decrypt_legacy(ciphertext)
+        except Exception as exc:
+            raise ValueError(f"Failed to decrypt token: {exc}") from exc

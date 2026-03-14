@@ -1,7 +1,6 @@
 """Application settings — loaded from .env or environment variables."""
 from __future__ import annotations
 
-import os
 from typing import List
 
 from pydantic_settings import BaseSettings, SettingsConfigDict

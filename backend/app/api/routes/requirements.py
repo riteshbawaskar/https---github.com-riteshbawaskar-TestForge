@@ -2,16 +2,17 @@
 from __future__ import annotations
 
 import io
+import json
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_project_repo, get_requirement_repo, get_testcase_repo
-from app.core.exceptions import GitLabError, NotFoundError
 from app.db.repository import ProjectRepository, RequirementRepository, TestCaseRepository
 from app.db.session import get_db
 from app.schemas.schemas import RequirementFetch, RequirementRead
+from app.services.gitlab_service import GitLabService
 
 
 def _build_excel_bytes(requirement_title: str, test_cases: list) -> bytes:
@@ -20,7 +21,6 @@ def _build_excel_bytes(requirement_title: str, test_cases: list) -> bytes:
     Manual test cases are expanded into structured rows (Preconditions, Test Data,
     Step #, Action, Expected Result).  BDD test cases go on a separate sheet.
     """
-    import json as _json
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.worksheet.worksheet import Worksheet
@@ -54,7 +54,7 @@ def _build_excel_bytes(requirement_title: str, test_cases: list) -> bytes:
         _style_header(ws_m, headers_m, widths_m)
         for idx, tc in enumerate(manual_tcs, 1):
             try:
-                data = _json.loads(tc.content)
+                data = json.loads(tc.content)
             except Exception:
                 data = {}
             preconditions = data.get("preconditions") or ""
@@ -98,20 +98,13 @@ async def fetch_requirement(
     db: AsyncSession = Depends(get_db),
 ):
     """Fetch one GitLab issue. Idempotent — returns existing record if already fetched."""
-    try:
-        project = await proj_repo.get_or_raise(payload.project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    project = await proj_repo.get_or_raise(payload.project_id)
 
     existing = await req_repo.find_by_issue_id(payload.project_id, payload.gitlab_issue_id)
     if existing:
         return existing
 
-    from app.services.gitlab_service import GitLabService
-    try:
-        data = GitLabService(project).fetch_issue(payload.gitlab_issue_id)
-    except GitLabError as exc:
-        raise HTTPException(422, str(exc))
+    data = GitLabService(project).fetch_issue(payload.gitlab_issue_id)
 
     req = await req_repo.create(project_id=payload.project_id, **data)
     await db.commit()
@@ -127,20 +120,13 @@ async def bulk_fetch(
     db: AsyncSession = Depends(get_db),
 ):
     """Import all GitLab issues matching the project's label/state filters."""
-    try:
-        project = await proj_repo.get_or_raise(project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    project = await proj_repo.get_or_raise(project_id)
 
-    from app.services.gitlab_service import GitLabService
-    try:
-        issues = GitLabService(project).list_issues(
-            labels=project.label_include,
-            state=project.issue_state,
-            max_results=project.max_issues,
-        )
-    except GitLabError as exc:
-        raise HTTPException(422, str(exc))
+    issues = GitLabService(project).list_issues(
+        labels=project.label_include,
+        state=project.issue_state,
+        max_results=project.max_issues,
+    )
 
     created = []
     for data in issues:
@@ -159,10 +145,7 @@ async def list_requirements(
     proj_repo: ProjectRepository = Depends(get_project_repo),
     req_repo: RequirementRepository = Depends(get_requirement_repo),
 ):
-    try:
-        await proj_repo.get_or_raise(project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    await proj_repo.get_or_raise(project_id)
     return await req_repo.list_by_project(project_id)
 
 
@@ -171,10 +154,7 @@ async def get_requirement(
     requirement_id: str,
     req_repo: RequirementRepository = Depends(get_requirement_repo),
 ):
-    try:
-        return await req_repo.get_or_raise(requirement_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    return await req_repo.get_or_raise(requirement_id)
 
 
 @router.delete("/{requirement_id}", status_code=204)
@@ -183,10 +163,7 @@ async def delete_requirement(
     req_repo: RequirementRepository = Depends(get_requirement_repo),
     db: AsyncSession = Depends(get_db),
 ):
-    try:
-        req = await req_repo.get_or_raise(requirement_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    req = await req_repo.get_or_raise(requirement_id)
     await req_repo.delete(req)
     await db.commit()
 
@@ -199,18 +176,12 @@ async def push_to_gitlab(
     tc_repo: TestCaseRepository = Depends(get_testcase_repo),
 ) -> Dict[str, Any]:
     """Post a markdown test-case summary + Excel attachment to the linked GitLab issue."""
-    try:
-        req = await req_repo.get_or_raise(requirement_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    req = await req_repo.get_or_raise(requirement_id)
 
     if not req.gitlab_issue_url:
         raise HTTPException(400, "Requirement has no linked GitLab issue URL")
 
-    try:
-        project = await proj_repo.get_or_raise(req.project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    project = await proj_repo.get_or_raise(req.project_id)
 
     test_cases = list(await tc_repo.list_by_requirement(requirement_id))
     if not test_cases:
@@ -219,16 +190,12 @@ async def push_to_gitlab(
     excel_bytes = _build_excel_bytes(req.title, test_cases)
     excel_filename = f"testcases_issue_{req.gitlab_issue_id or 'export'}.xlsx"
 
-    from app.services.gitlab_service import GitLabService
-    try:
-        result = GitLabService(project).post_test_cases_to_issue(
-            issue_url=req.gitlab_issue_url,
-            requirement_title=req.title,
-            test_cases=test_cases,
-            excel_bytes=excel_bytes,
-            excel_filename=excel_filename,
-        )
-    except GitLabError as exc:
-        raise HTTPException(422, str(exc))
+    result = GitLabService(project).post_test_cases_to_issue(
+        issue_url=req.gitlab_issue_url,
+        requirement_title=req.title,
+        test_cases=test_cases,
+        excel_bytes=excel_bytes,
+        excel_filename=excel_filename,
+    )
 
     return result

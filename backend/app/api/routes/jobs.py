@@ -4,13 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_job_repo
-from app.core.exceptions import NotFoundError
 from app.db.repository import JobRepository
 from app.db.session import AsyncSessionLocal
+from app.models.models import GenerationJob
 from app.schemas.schemas import JobRead
 
 router = APIRouter()
@@ -18,10 +18,7 @@ router = APIRouter()
 
 @router.get("/{job_id}", response_model=JobRead)
 async def get_job(job_id: str, repo: JobRepository = Depends(get_job_repo)):
-    try:
-        return await repo.get_or_raise(job_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    return await repo.get_or_raise(job_id)
 
 
 @router.get("/{job_id}/stream")
@@ -32,7 +29,6 @@ async def stream_job(job_id: str):
         try:
             while True:
                 async with AsyncSessionLocal() as db:
-                    from app.models.models import GenerationJob
                     job = await db.get(GenerationJob, job_id)
 
                 if job is None:

@@ -82,8 +82,6 @@ class ProjectRead(BaseModel):
     def model_validate(cls, obj, **kwargs):
         """Inject computed `*_key_set` booleans before standard validation."""
         if hasattr(obj, "llm_api_key_encrypted"):
-            # Convert ORM object to dict for mutation
-            from sqlalchemy.orm import InstanceState  # guard
             d = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
             d["llm_api_key_set"]       = bool(obj.llm_api_key_encrypted)
             d["embedding_api_key_set"] = bool(obj.embedding_api_key_encrypted)

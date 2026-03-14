@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.api.routes import documents, jobs, projects, requirements, testcases
 from app.core.config import settings
@@ -74,7 +75,6 @@ async def health():
 
 @app.get("/ready", tags=["Infra"])
 async def ready():
-    from sqlalchemy import text
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))

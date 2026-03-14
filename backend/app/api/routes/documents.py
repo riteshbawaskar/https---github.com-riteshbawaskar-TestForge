@@ -11,10 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_document_repo, get_project_repo
 from app.core.config import settings
-from app.core.exceptions import NotFoundError
 from app.db.repository import DocumentRepository, ProjectRepository
 from app.db.session import get_db
 from app.schemas.schemas import DocumentRead, DocumentStats
+from app.services.document_service import delete_document_vectors, get_index_stats
+from app.workers.tasks import run_index_document
 
 router = APIRouter()
 
@@ -31,10 +32,7 @@ async def upload_document(
     proj_repo: ProjectRepository = Depends(get_project_repo),
     db: AsyncSession = Depends(get_db),
 ):
-    try:
-        await proj_repo.get_or_raise(project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    await proj_repo.get_or_raise(project_id)
 
     ext = _ext(file.filename or "")
     if ext not in settings.ALLOWED_EXTENSIONS:
@@ -63,8 +61,6 @@ async def upload_document(
     await db.commit()
     await db.refresh(doc)
 
-    # Fire-and-forget background indexing
-    from app.workers.tasks import run_index_document
     asyncio.create_task(run_index_document(doc_id, dest, project_id))
 
     return doc
@@ -76,10 +72,7 @@ async def list_documents(
     proj_repo: ProjectRepository = Depends(get_project_repo),
     doc_repo: DocumentRepository = Depends(get_document_repo),
 ):
-    try:
-        await proj_repo.get_or_raise(project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    await proj_repo.get_or_raise(project_id)
     return await doc_repo.list_by_project(project_id)
 
 
@@ -88,7 +81,6 @@ async def index_stats(
     project_id: str,
     doc_repo: DocumentRepository = Depends(get_document_repo),
 ):
-    from app.services.document_service import get_index_stats
     doc_count    = await doc_repo.count_by_project(project_id)
     total_chunks = await doc_repo.total_chunks_by_project(project_id)
     info         = get_index_stats(project_id)
@@ -107,13 +99,9 @@ async def delete_document(
     doc_repo: DocumentRepository = Depends(get_document_repo),
     db: AsyncSession = Depends(get_db),
 ):
-    try:
-        doc = await doc_repo.get_or_raise(document_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    doc = await doc_repo.get_or_raise(document_id)
 
     # Remove vectors from Qdrant
-    from app.services.document_service import delete_document_vectors
     delete_document_vectors(str(doc.project_id), document_id)
 
     # Remove file from disk

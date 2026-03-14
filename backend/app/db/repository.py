@@ -1,12 +1,12 @@
 """Repository helpers — thin async wrappers over SQLAlchemy sessions."""
 from __future__ import annotations
 
-from datetime import datetime
 from typing import List, Optional, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import NotFoundError
 from app.models.models import Document, GenerationJob, Project, Requirement, TestCase
 
 
@@ -20,7 +20,6 @@ class ProjectRepository:
     async def get_or_raise(self, project_id: str) -> Project:
         p = await self.get(project_id)
         if not p:
-            from app.core.exceptions import NotFoundError
             raise NotFoundError("Project", project_id)
         return p
 
@@ -50,7 +49,6 @@ class DocumentRepository:
     async def get_or_raise(self, doc_id: str) -> Document:
         d = await self.get(doc_id)
         if not d:
-            from app.core.exceptions import NotFoundError
             raise NotFoundError("Document", doc_id)
         return d
 
@@ -98,7 +96,6 @@ class RequirementRepository:
     async def get_or_raise(self, req_id: str) -> Requirement:
         r = await self.get(req_id)
         if not r:
-            from app.core.exceptions import NotFoundError
             raise NotFoundError("Requirement", req_id)
         return r
 
@@ -148,7 +145,6 @@ class TestCaseRepository:
     async def get_or_raise(self, tc_id: str) -> TestCase:
         tc = await self.get(tc_id)
         if not tc:
-            from app.core.exceptions import NotFoundError
             raise NotFoundError("TestCase", tc_id)
         return tc
 
@@ -197,7 +193,6 @@ class JobRepository:
     async def get_or_raise(self, job_id: str) -> GenerationJob:
         j = await self.get(job_id)
         if not j:
-            from app.core.exceptions import NotFoundError
             raise NotFoundError("GenerationJob", job_id)
         return j
 

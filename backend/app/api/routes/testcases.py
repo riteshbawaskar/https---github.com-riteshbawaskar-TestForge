@@ -5,17 +5,17 @@ import asyncio
 import csv
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_job_repo, get_requirement_repo, get_testcase_repo
-from app.core.exceptions import NotFoundError
 from app.db.repository import JobRepository, RequirementRepository, TestCaseRepository
 from app.db.session import get_db
 from app.schemas.schemas import ExportRequest, GenerateRequest, JobRead, TestCaseCreate, TestCaseRead, TestCaseUpdate
+from app.workers.tasks import run_generate_test_cases
 
 router = APIRouter()
 
@@ -28,10 +28,7 @@ async def create_test_case(
     db: AsyncSession = Depends(get_db),
 ):
     """Manually create a test case."""
-    try:
-        await req_repo.get_or_raise(payload.requirement_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    await req_repo.get_or_raise(payload.requirement_id)
 
     tc = await tc_repo.create(
         requirement_id=payload.requirement_id,
@@ -56,10 +53,7 @@ async def trigger_generation(
     db: AsyncSession = Depends(get_db),
 ):
     """Start async test case generation. Returns a job to poll/stream."""
-    try:
-        req = await req_repo.get_or_raise(payload.requirement_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    req = await req_repo.get_or_raise(payload.requirement_id)
 
     job = await job_repo.create(
         requirement_id=payload.requirement_id,
@@ -70,7 +64,6 @@ async def trigger_generation(
     await db.commit()
     await db.refresh(job)
 
-    from app.workers.tasks import run_generate_test_cases
     asyncio.create_task(run_generate_test_cases(
         job_id=job.id,
         requirement_id=payload.requirement_id,
@@ -97,10 +90,7 @@ async def get_test_case(
     testcase_id: str,
     tc_repo: TestCaseRepository = Depends(get_testcase_repo),
 ):
-    try:
-        return await tc_repo.get_or_raise(testcase_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    return await tc_repo.get_or_raise(testcase_id)
 
 
 @router.patch("/{testcase_id}", response_model=TestCaseRead)
@@ -110,15 +100,12 @@ async def update_test_case(
     tc_repo: TestCaseRepository = Depends(get_testcase_repo),
     db: AsyncSession = Depends(get_db),
 ):
-    try:
-        tc = await tc_repo.get_or_raise(testcase_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    tc = await tc_repo.get_or_raise(testcase_id)
 
     for k, v in payload.model_dump(exclude_none=True).items():
         setattr(tc, k, v)
     tc.edited     = True
-    tc.updated_at = datetime.utcnow()
+    tc.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     await db.commit()
     await db.refresh(tc)
     return tc
@@ -130,10 +117,7 @@ async def delete_test_case(
     tc_repo: TestCaseRepository = Depends(get_testcase_repo),
     db: AsyncSession = Depends(get_db),
 ):
-    try:
-        tc = await tc_repo.get_or_raise(testcase_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    tc = await tc_repo.get_or_raise(testcase_id)
     await tc_repo.delete(tc)
     await db.commit()
 

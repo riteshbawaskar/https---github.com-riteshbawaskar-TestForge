@@ -1,15 +1,15 @@
 """Project CRUD + GitLab connection test."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_project_repo
-from app.core.exceptions import NotFoundError
 from app.core.security import encrypt_token
 from app.db.repository import ProjectRepository
 from app.db.session import get_db
 from app.schemas.schemas import GitLabConnectionResult, ProjectCreate, ProjectRead, ProjectUpdate
+from app.services.gitlab_service import GitLabService
 
 router = APIRouter()
 
@@ -40,10 +40,7 @@ async def list_projects(repo: ProjectRepository = Depends(get_project_repo)):
 
 @router.get("/{project_id}", response_model=ProjectRead)
 async def get_project(project_id: str, repo: ProjectRepository = Depends(get_project_repo)):
-    try:
-        return await repo.get_or_raise(project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    return await repo.get_or_raise(project_id)
 
 
 @router.put("/{project_id}", response_model=ProjectRead)
@@ -53,10 +50,7 @@ async def update_project(
     repo: ProjectRepository = Depends(get_project_repo),
     db: AsyncSession = Depends(get_db),
 ):
-    try:
-        project = await repo.get_or_raise(project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    project = await repo.get_or_raise(project_id)
 
     for k, v in payload.model_dump(
         exclude_none=True,
@@ -82,10 +76,7 @@ async def delete_project(
     repo: ProjectRepository = Depends(get_project_repo),
     db: AsyncSession = Depends(get_db),
 ):
-    try:
-        project = await repo.get_or_raise(project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    project = await repo.get_or_raise(project_id)
     await repo.delete(project)
     await db.commit()
 
@@ -95,10 +86,6 @@ async def test_connection(
     project_id: str,
     repo: ProjectRepository = Depends(get_project_repo),
 ):
-    try:
-        project = await repo.get_or_raise(project_id)
-    except NotFoundError as exc:
-        raise HTTPException(404, str(exc))
+    project = await repo.get_or_raise(project_id)
 
-    from app.services.gitlab_service import GitLabService
     return GitLabService(project).test_connection()

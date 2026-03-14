@@ -50,16 +50,24 @@ class EmbeddingConfig:
 
 # ─────────────────────────────── Qdrant helpers ──────────────────────────────
 
+_qdrant_client = None  # module-level cache — created once, reused across calls
+
+
 def _qdrant():
+    global _qdrant_client
+    if _qdrant_client is not None:
+        return _qdrant_client
     from qdrant_client import QdrantClient
     if settings.QDRANT_URL:
         kwargs = {"url": settings.QDRANT_URL}
         if settings.QDRANT_API_KEY:
             kwargs["api_key"] = settings.QDRANT_API_KEY
-        return QdrantClient()
-    import os
-    os.makedirs(settings.QDRANT_PATH, exist_ok=True)
-    return QdrantClient(path=settings.QDRANT_PATH)
+        _qdrant_client = QdrantClient(**kwargs)
+    else:
+        import os
+        os.makedirs(settings.QDRANT_PATH, exist_ok=True)
+        _qdrant_client = QdrantClient(path=settings.QDRANT_PATH)
+    return _qdrant_client
 
 
 def _collection_name(project_id: str) -> str:
@@ -139,27 +147,6 @@ def _embed_gemini(texts: List[str], model: str = "", api_key: str = "") -> List[
     return results
 
 
-_local_model = None  # module-level singleton to avoid reloading
-
-# def _embed_local(texts: List[str]) -> List[List[float]]:
-#     global _local_model
-#     try:
-#         from sentence_transformers import SentenceTransformer
-#     except ImportError:
-#         raise DocumentIngestionError(
-#             "EMBEDDING_PROVIDER=local requires sentence-transformers.\n"
-#             "Run: pip install sentence-transformers"
-#         )
-#     if _local_model is None:
-#         model_name = settings.EMBEDDING_MODEL \
-#             if settings.EMBEDDING_MODEL != "text-embedding-3-small" \
-#             else "all-MiniLM-L6-v2"
-#         log.info(f"loading local embedding model: {model_name}")
-#         _local_model = SentenceTransformer(model_name)
-#     vecs = _local_model.encode(texts, show_progress_bar=False)
-#     return [v.tolist() for v in vecs]
-
-
 def _embed(texts: List[str], cfg: Optional[EmbeddingConfig] = None) -> List[List[float]]:
     """Dispatch to the configured embedding provider."""
     p = (cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER).lower()
@@ -167,9 +154,7 @@ def _embed(texts: List[str], cfg: Optional[EmbeddingConfig] = None) -> List[List
     k = cfg.resolved_key() if cfg else ""
     if p == "gemini":
         return _embed_gemini(texts, model=m, api_key=k)
-    # if p == "local":
-    #     return _embed_local(texts)
-    return _embed_openai(texts, model=m, api_key=k)  # default
+    return _embed_openai(texts, model=m, api_key=k)  # default (openai / local not yet supported)
 
 
 def _check_embedding_config(cfg: Optional[EmbeddingConfig] = None) -> None:

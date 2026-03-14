@@ -9,7 +9,14 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+
+from app.core.exceptions import DocumentIngestionError, LLMError
+from app.core.security import decrypt_token
+from app.db.session import AsyncSessionLocal
+from app.models.models import Document, GenerationJob, Project, Requirement, TestCase
+from app.services.document_service import EmbeddingConfig, ingest_document
+from app.services.generation_service import generate_test_cases
 
 log = logging.getLogger(__name__)
 
@@ -23,13 +30,6 @@ async def run_generate_test_cases(
     additional_context: str,
 ) -> None:
     """Async background task: generate test cases and persist them."""
-    from app.db.session import AsyncSessionLocal
-    from app.models.models import GenerationJob, Project, Requirement, TestCase
-    from app.services.generation_service import generate_test_cases
-    from app.services.document_service import EmbeddingConfig
-    from app.core.exceptions import LLMError, DocumentIngestionError
-    from app.core.security import decrypt_token
-
     async with AsyncSessionLocal() as db:
         job = await db.get(GenerationJob, job_id)
         if not job:
@@ -42,7 +42,7 @@ async def run_generate_test_cases(
             if error:
                 job.error_message = error
             if status in ("COMPLETE", "FAILED"):
-                job.completed_at = datetime.utcnow()
+                job.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
             await db.commit()
 
         await _update("RUNNING", "Fetching requirement details…")
@@ -77,7 +77,7 @@ async def run_generate_test_cases(
             await asyncio.sleep(0)
 
             # Generation is CPU/IO bound (blocking HTTP) — run in thread executor
-            loop  = asyncio.get_event_loop()
+            loop  = asyncio.get_running_loop()
             cases = await loop.run_in_executor(
                 None,
                 lambda: generate_test_cases(
@@ -136,12 +136,6 @@ async def run_index_document(
     project_id: str,
 ) -> None:
     """Async background task: parse and index a document into Qdrant."""
-    from app.db.session import AsyncSessionLocal
-    from app.models.models import Document, Project
-    from app.services.document_service import ingest_document, EmbeddingConfig
-    from app.core.exceptions import DocumentIngestionError
-    from app.core.security import decrypt_token
-
     async with AsyncSessionLocal() as db:
         doc     = await db.get(Document, document_id)
         project = await db.get(Project, project_id)
@@ -154,13 +148,13 @@ async def run_index_document(
 
         emb_api_key = decrypt_token(project.embedding_api_key_encrypted) if (project and project.embedding_api_key_encrypted) else ""
         embedding_cfg = EmbeddingConfig(
-            provider=project.embedding_provider or "" if project else "",
-            model=project.embedding_model or "" if project else "",
+            provider=project.embedding_provider or "",
+            model=project.embedding_model or "",
             api_key=emb_api_key,
         ) if project else None
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             chunk_count = await loop.run_in_executor(
                 None,
                 lambda: ingest_document(file_path, project_id, document_id, embedding_cfg),
@@ -170,7 +164,7 @@ async def run_index_document(
             await db.commit()
             log.info(f"document_indexed doc_id={document_id} chunks={chunk_count}")
 
-        except (DocumentIngestionError, Exception) as exc:
+        except Exception as exc:
             log.error(f"indexing_failed doc_id={document_id} error={exc}")
             doc.status        = "FAILED"
             doc.error_message = str(exc)
