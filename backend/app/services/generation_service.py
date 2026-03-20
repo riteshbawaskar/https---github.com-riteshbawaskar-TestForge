@@ -2,14 +2,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
 from app.core.exceptions import LLMError
-from app.services.document_service import retrieve_context, EmbeddingConfig
+from app.services.document_service import EmbeddingConfig, retrieve_context
+from app.services.usage_service import (
+    UsageMetrics,
+    extract_anthropic_usage,
+    extract_gemini_llm_usage,
+    extract_openai_chat_usage,
+)
 
-import logging
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────── System prompts ──────────────────────────────
@@ -64,6 +71,14 @@ RESPONSE: return ONLY a valid JSON array, no markdown, no extra text:
 ]
 """
 
+
+@dataclass
+class GenerationResult:
+    cases: List[Dict[str, Any]]
+    llm_usage: UsageMetrics
+    embedding_usage: UsageMetrics
+
+
 # ─────────────────────────────── Helpers ─────────────────────────────────────
 
 def _build_prompt(req: Dict, chunks: List[str], count_hint: str, extra: str) -> str:
@@ -108,13 +123,14 @@ def _call_llm(
     model: str,
     api_key: str = "",
     api_url: str = "",
-) -> List[Dict[str, Any]]:
-    """Call Anthropic, OpenAI, or Gemini and parse the response. Simple 1-retry on parse failure."""
+) -> tuple[str, UsageMetrics]:
+    """Call Anthropic, OpenAI, or Gemini and return raw output plus usage."""
     if provider == "anthropic":
         key = api_key or settings.ANTHROPIC_API_KEY
         if not key:
             raise LLMError("No Anthropic API key configured (set in project settings or ANTHROPIC_API_KEY env var)")
         import anthropic
+
         kwargs: Dict[str, Any] = {"api_key": key}
         if api_url:
             kwargs["base_url"] = api_url
@@ -126,12 +142,14 @@ def _call_llm(
             messages=[{"role": "user", "content": user}],
         )
         raw = resp.content[0].text
+        usage = extract_anthropic_usage(resp, provider, model, f"{system}\n\n{user}", raw)
 
     elif provider == "openai":
         key = api_key or settings.OPENAI_API_KEY
         if not key:
             raise LLMError("No OpenAI API key configured (set in project settings or OPENAI_API_KEY env var)")
         import openai
+
         kwargs = {"api_key": key}
         if api_url:
             kwargs["base_url"] = api_url
@@ -142,12 +160,14 @@ def _call_llm(
             max_tokens=settings.LLM_MAX_TOKENS,
         )
         raw = resp.choices[0].message.content or ""
+        usage = extract_openai_chat_usage(resp, provider, model, f"{system}\n\n{user}", raw)
 
     elif provider == "gemini":
         key = api_key or settings.GEMINI_API_KEY
         if not key:
             raise LLMError("No Gemini API key configured (set in project settings or GEMINI_API_KEY env var)")
         import google.generativeai as genai
+
         genai.configure(api_key=key)
         gemini_model = genai.GenerativeModel(
             model_name=model,
@@ -161,12 +181,13 @@ def _call_llm(
             ),
         )
         raw = resp.text
+        usage = extract_gemini_llm_usage(resp, provider, model, f"{system}\n\n{user}", raw)
 
     else:
         raise LLMError(f"Unknown provider: {provider!r}. Must be 'anthropic', 'openai', or 'gemini'")
 
     log.info(f"llm_response provider={provider} length={len(raw)}")
-    return _clean_and_parse(raw)
+    return raw, usage
 
 
 # ─────────────────────────────── Public API ──────────────────────────────────
@@ -183,19 +204,24 @@ def generate_test_cases(
     api_key: str = "",
     api_url: str = "",
     embedding_cfg: Optional["EmbeddingConfig"] = None,
-) -> List[Dict[str, Any]]:
+) -> GenerationResult:
     """Generate test cases using RAG + LLM. fmt = BDD | MANUAL | BOTH."""
 
     if fmt == "BOTH":
-        bdd    = generate_test_cases(requirement, project_id, "BDD",    count_hint, additional_context, llm_provider, llm_model, custom_instructions, api_key, api_url, embedding_cfg)
+        bdd = generate_test_cases(requirement, project_id, "BDD", count_hint, additional_context, llm_provider, llm_model, custom_instructions, api_key, api_url, embedding_cfg)
         manual = generate_test_cases(requirement, project_id, "MANUAL", count_hint, additional_context, llm_provider, llm_model, custom_instructions, api_key, api_url, embedding_cfg)
-        for tc in bdd:    tc["format"] = "BDD"
-        for tc in manual: tc["format"] = "MANUAL"
-        return bdd + manual
+        for tc in bdd.cases:
+            tc["format"] = "BDD"
+        for tc in manual.cases:
+            tc["format"] = "MANUAL"
+        return GenerationResult(
+            cases=bdd.cases + manual.cases,
+            llm_usage=UsageMetrics().add(bdd.llm_usage).add(manual.llm_usage),
+            embedding_usage=UsageMetrics().add(bdd.embedding_usage).add(manual.embedding_usage),
+        )
 
-    # RAG
-    query  = f"{requirement['title']} {requirement.get('description', '')}"
-    chunks = retrieve_context(query, project_id, cfg=embedding_cfg)
+    query = f"{requirement['title']} {requirement.get('description', '')}"
+    chunks, embedding_usage = retrieve_context(query, project_id, cfg=embedding_cfg)
     log.info(f"generation_context chunks={len(chunks)} format={fmt}")
 
     system = BDD_SYSTEM if fmt == "BDD" else MANUAL_SYSTEM
@@ -203,15 +229,23 @@ def generate_test_cases(
         system += f"\n\n## Project Instructions\n{custom_instructions}"
 
     user = _build_prompt(requirement, chunks, count_hint, additional_context)
+    llm_usage = UsageMetrics()
 
-    # One retry on parse failure
     try:
-        cases = _call_llm(system, user, llm_provider, llm_model, api_key, api_url)
-    except LLMError:
+        raw, call_usage = _call_llm(system, user, llm_provider, llm_model, api_key, api_url)
+        llm_usage.add(call_usage)
+        cases = _clean_and_parse(raw)
+    except LLMError as exc:
         log.warning("llm_parse_failed — retrying once")
-        cases = _call_llm(system, user, llm_provider, llm_model, api_key, api_url)
+        try:
+            raw, retry_usage = _call_llm(system, user, llm_provider, llm_model, api_key, api_url)
+            llm_usage.add(retry_usage)
+            cases = _clean_and_parse(raw)
+        except LLMError as retry_exc:
+            retry_exc.llm_usage = llm_usage
+            retry_exc.embedding_usage = embedding_usage
+            raise retry_exc from exc
 
-    # Normalise
     for tc in cases:
         content = tc.get("content", "")
         if isinstance(content, dict):
@@ -222,4 +256,4 @@ def generate_test_cases(
         tc.setdefault("tags", "")
 
     log.info(f"generation_complete format={fmt} count={len(cases)}")
-    return cases
+    return GenerationResult(cases=cases, llm_usage=llm_usage, embedding_usage=embedding_usage)

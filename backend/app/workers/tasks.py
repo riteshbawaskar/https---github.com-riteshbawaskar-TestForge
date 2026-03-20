@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from app.core.exceptions import DocumentIngestionError, LLMError
 from app.core.security import decrypt_token
+from app.db.repository import ProjectRepository
 from app.db.session import AsyncSessionLocal
 from app.models.models import Document, GenerationJob, Project, Requirement, TestCase
 from app.services.document_service import EmbeddingConfig, ingest_document
@@ -78,7 +79,7 @@ async def run_generate_test_cases(
 
             # Generation is CPU/IO bound (blocking HTTP) — run in thread executor
             loop  = asyncio.get_running_loop()
-            cases = await loop.run_in_executor(
+            result = await loop.run_in_executor(
                 None,
                 lambda: generate_test_cases(
                     requirement=req_dict,
@@ -94,11 +95,21 @@ async def run_generate_test_cases(
                     embedding_cfg=embedding_cfg,
                 ),
             )
+            await ProjectRepository(db).increment_usage(
+                project_id,
+                llm_requests=result.llm_usage.requests,
+                llm_input_tokens=result.llm_usage.input_tokens,
+                llm_output_tokens=result.llm_usage.output_tokens,
+                llm_cost_usd=result.llm_usage.cost_usd,
+                embedding_requests=result.embedding_usage.requests,
+                embedding_tokens=result.embedding_usage.total_tokens,
+                embedding_cost_usd=result.embedding_usage.cost_usd,
+            )
 
-            await _update("RUNNING", f"Saving {len(cases)} test cases…")
+            await _update("RUNNING", f"Saving {len(result.cases)} test cases…")
 
             rows = []
-            for tc in cases:
+            for tc in result.cases:
                 content = tc.get("content", "")
                 if isinstance(content, dict):
                     content = json.dumps(content, indent=2)
@@ -122,6 +133,16 @@ async def run_generate_test_cases(
             log.info(f"generation_complete job={job_id} count={len(rows)}")
 
         except (LLMError, DocumentIngestionError) as exc:
+            await ProjectRepository(db).increment_usage(
+                project_id,
+                llm_requests=getattr(getattr(exc, "llm_usage", None), "requests", 0),
+                llm_input_tokens=getattr(getattr(exc, "llm_usage", None), "input_tokens", 0),
+                llm_output_tokens=getattr(getattr(exc, "llm_usage", None), "output_tokens", 0),
+                llm_cost_usd=getattr(getattr(exc, "llm_usage", None), "cost_usd", 0.0),
+                embedding_requests=getattr(getattr(exc, "embedding_usage", None), "requests", 0),
+                embedding_tokens=getattr(getattr(exc, "embedding_usage", None), "total_tokens", 0),
+                embedding_cost_usd=getattr(getattr(exc, "embedding_usage", None), "cost_usd", 0.0),
+            )
             log.error(f"generation_failed job={job_id} error={exc}")
             await _update("FAILED", "Generation failed", str(exc))
 
@@ -155,12 +176,18 @@ async def run_index_document(
 
         try:
             loop = asyncio.get_running_loop()
-            chunk_count = await loop.run_in_executor(
+            chunk_count, usage = await loop.run_in_executor(
                 None,
                 lambda: ingest_document(file_path, project_id, document_id, embedding_cfg),
             )
             doc.chunk_count = chunk_count
             doc.status      = "INDEXED"
+            await ProjectRepository(db).increment_usage(
+                project_id,
+                embedding_requests=usage.requests,
+                embedding_tokens=usage.total_tokens,
+                embedding_cost_usd=usage.cost_usd,
+            )
             await db.commit()
             log.info(f"document_indexed doc_id={document_id} chunks={chunk_count}")
 

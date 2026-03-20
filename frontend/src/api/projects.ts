@@ -1,5 +1,5 @@
 import api from "./client";
-import type { Project, GitLabConnectionResult } from "../types";
+import type { Project, GitLabConnectionResult, ProjectUsageSummary } from "../types";
 
 export const projectsApi = {
   list: () =>
@@ -7,6 +7,9 @@ export const projectsApi = {
 
   get: (id: string) =>
     api.get<Project>(`/projects/${id}`).then(r => r.data),
+
+  usage: (id: string) =>
+    api.get<ProjectUsageSummary>(`/projects/${id}/usage`).then(r => r.data),
 
   create: (data: Partial<Project> & { gitlab_token?: string }) =>
     api.post<Project>("/projects/", data).then(r => r.data),

@@ -1,89 +1,87 @@
 /**
- * Qdrant vector DB client wrapper.
- * Qdrant must be running (Docker or Qdrant Cloud).
- * Start locally:  docker run -p 6333:6333 qdrant/qdrant
+ * LanceDB vector DB wrapper — file-based, no server required.
+ * Data is stored in the directory defined by LANCEDB_PATH (default: ./lancedb_storage).
  */
-import { QdrantClient } from '@qdrant/js-client-rest';
+import * as lancedb from '@lancedb/lancedb';
 import { config } from '../config.js';
-import { vectorSize } from './embedding.js';
 
-let _client = null;
+let _db = null;
 
-function qdrant() {
-  if (!_client) {
-    _client = new QdrantClient({
-      url: config.qdrantUrl,
-      ...(config.qdrantApiKey ? { apiKey: config.qdrantApiKey } : {}),
-    });
+async function getDb() {
+  if (!_db) {
+    _db = await lancedb.connect(config.lanceDbPath);
   }
-  return _client;
+  return _db;
 }
 
-function collectionName(projectId) {
+function tableName(projectId) {
   return `project_${projectId.replace(/-/g, '_')}`;
 }
 
-async function ensureCollection(client, name) {
-  const { collections } = await client.getCollections();
-  const exists = collections.some(c => c.name === name);
-  if (!exists) {
-    await client.createCollection(name, {
-      vectors: { size: vectorSize(), distance: 'Cosine' },
-    });
-    console.log(`[qdrant] Created collection: ${name}`);
-  }
-}
-
 export async function upsertChunks(projectId, documentId, chunks, embeddings) {
-  const client = qdrant();
-  const col    = collectionName(projectId);
-  await ensureCollection(client, col);
+  if (!chunks.length) return;
 
-  const points = chunks.map((text, i) => ({
-    id:      `${documentId}_${i}`,   // Qdrant accepts string IDs
-    vector:  embeddings[i],
-    payload: { document_id: documentId, chunk_index: i, text, source: documentId },
+  const db  = await getDb();
+  const tbl = tableName(projectId);
+
+  const records = chunks.map((text, i) => ({
+    id:          `${documentId}_${i}`,
+    vector:      embeddings[i],
+    document_id: documentId,
+    chunk_index: i,
+    text,
+    source:      documentId,
   }));
 
-  // Upsert in batches of 100
-  for (let i = 0; i < points.length; i += 100) {
-    await client.upsert(col, { wait: true, points: points.slice(i, i + 100) });
+  const names = await db.tableNames();
+  if (!names.includes(tbl)) {
+    await db.createTable(tbl, records);
+    console.log(`[lancedb] Created table: ${tbl}`);
+  } else {
+    const table = await db.openTable(tbl);
+    // Replace all chunks for this document
+    const escaped = documentId.replace(/'/g, "''");
+    await table.delete(`document_id = '${escaped}'`);
+    await table.add(records);
   }
 }
 
 export async function searchChunks(projectId, queryVector, k) {
-  const client = qdrant();
-  const col    = collectionName(projectId);
-  const { collections } = await client.getCollections();
-  if (!collections.some(c => c.name === col)) return [];
+  const db    = await getDb();
+  const tbl   = tableName(projectId);
+  const names = await db.tableNames();
+  if (!names.includes(tbl)) return [];
 
-  const hits = await client.search(col, { vector: queryVector, limit: k, with_payload: true });
-  return hits.map(h => h.payload?.text || '');
+  const table   = await db.openTable(tbl);
+  const results = await table.search(queryVector).limit(k).toArray();
+  return results.map(r => r.text || '');
 }
 
 export async function deleteDocumentVectors(projectId, documentId) {
   try {
-    const client = qdrant();
-    const col    = collectionName(projectId);
-    const { collections } = await client.getCollections();
-    if (!collections.some(c => c.name === col)) return;
+    const db    = await getDb();
+    const tbl   = tableName(projectId);
+    const names = await db.tableNames();
+    if (!names.includes(tbl)) return;
 
-    await client.delete(col, {
-      filter: { must: [{ key: 'document_id', match: { value: documentId } }] },
-    });
+    const table   = await db.openTable(tbl);
+    const escaped = documentId.replace(/'/g, "''");
+    await table.delete(`document_id = '${escaped}'`);
   } catch (e) {
-    console.warn(`[qdrant] deleteDocumentVectors failed: ${e.message}`);
+    console.warn(`[lancedb] deleteDocumentVectors failed: ${e.message}`);
   }
 }
 
 export async function getCollectionStats(projectId) {
   try {
-    const client = qdrant();
-    const col    = collectionName(projectId);
-    const { collections } = await client.getCollections();
-    if (!collections.some(c => c.name === col)) return { total_vectors: 0 };
-    const info = await client.getCollection(col);
-    return { total_vectors: info.vectors_count || 0 };
+    const db    = await getDb();
+    const tbl   = tableName(projectId);
+    const names = await db.tableNames();
+    if (!names.includes(tbl)) return { total_vectors: 0 };
+
+    const table = await db.openTable(tbl);
+    const count = await table.countRows();
+    return { total_vectors: count };
   } catch {
     return { total_vectors: 0 };
   }

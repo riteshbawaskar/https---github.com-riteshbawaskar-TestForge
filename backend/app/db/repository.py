@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
@@ -37,6 +37,32 @@ class ProjectRepository:
     async def delete(self, project: Project) -> None:
         await self.db.delete(project)
         await self.db.flush()
+
+    async def increment_usage(
+        self,
+        project_id: str,
+        *,
+        llm_requests: int = 0,
+        llm_input_tokens: int = 0,
+        llm_output_tokens: int = 0,
+        llm_cost_usd: float = 0.0,
+        embedding_requests: int = 0,
+        embedding_tokens: int = 0,
+        embedding_cost_usd: float = 0.0,
+    ) -> None:
+        await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(
+                llm_requests=Project.llm_requests + llm_requests,
+                llm_input_tokens=Project.llm_input_tokens + llm_input_tokens,
+                llm_output_tokens=Project.llm_output_tokens + llm_output_tokens,
+                llm_cost_usd=Project.llm_cost_usd + llm_cost_usd,
+                embedding_requests=Project.embedding_requests + embedding_requests,
+                embedding_tokens=Project.embedding_tokens + embedding_tokens,
+                embedding_cost_usd=Project.embedding_cost_usd + embedding_cost_usd,
+            )
+        )
 
 
 class DocumentRepository:

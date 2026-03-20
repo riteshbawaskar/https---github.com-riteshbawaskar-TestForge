@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from app.api.routes import documents, jobs, projects, requirements, testcases
 from app.core.config import settings
@@ -18,11 +18,29 @@ logging.basicConfig(level=settings.LOG_LEVEL, format="%(asctime)s %(levelname)s 
 log = logging.getLogger(__name__)
 
 
+async def _ensure_project_usage_columns(conn) -> None:
+    columns = await conn.run_sync(lambda sync_conn: {c["name"] for c in inspect(sync_conn).get_columns("projects")})
+    additions = {
+        "llm_requests": "ALTER TABLE projects ADD COLUMN llm_requests INTEGER NOT NULL DEFAULT 0",
+        "llm_input_tokens": "ALTER TABLE projects ADD COLUMN llm_input_tokens INTEGER NOT NULL DEFAULT 0",
+        "llm_output_tokens": "ALTER TABLE projects ADD COLUMN llm_output_tokens INTEGER NOT NULL DEFAULT 0",
+        "llm_cost_usd": "ALTER TABLE projects ADD COLUMN llm_cost_usd FLOAT NOT NULL DEFAULT 0",
+        "embedding_requests": "ALTER TABLE projects ADD COLUMN embedding_requests INTEGER NOT NULL DEFAULT 0",
+        "embedding_tokens": "ALTER TABLE projects ADD COLUMN embedding_tokens INTEGER NOT NULL DEFAULT 0",
+        "embedding_cost_usd": "ALTER TABLE projects ADD COLUMN embedding_cost_usd FLOAT NOT NULL DEFAULT 0",
+    }
+    for name, ddl in additions.items():
+        if name not in columns:
+            await conn.execute(text(ddl))
+            log.info("Added projects.%s column", name)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info(f"Starting TestForge — env={settings.ENVIRONMENT} db={settings.DATABASE_URL}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _ensure_project_usage_columns(conn)
     log.info("Database tables ready")
     yield
     await engine.dispose()

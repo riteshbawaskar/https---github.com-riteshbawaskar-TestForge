@@ -89,6 +89,23 @@ class ProjectRead(BaseModel):
         return super().model_validate(obj, **kwargs)
 
 
+class UsageBreakdown(BaseModel):
+    provider: str
+    model: str
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated_cost_usd: float
+
+
+class ProjectUsageSummary(BaseModel):
+    project_id: str
+    llm: UsageBreakdown
+    embedding: UsageBreakdown
+    total_estimated_cost_usd: float
+
+
 class GitLabConnectionResult(BaseModel):
     connected: bool
     project_name: Optional[str]       = None

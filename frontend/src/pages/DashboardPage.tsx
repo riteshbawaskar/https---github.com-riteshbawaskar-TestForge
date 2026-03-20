@@ -3,8 +3,38 @@ import { useNavigate } from "react-router-dom";
 import { Spinner, Badge } from "../components/shared";
 import { useProjectStore } from "../store/useProjectStore";
 import { documentsApi } from "../api/documents";
+import { projectsApi } from "../api/projects";
 import { requirementsApi, testCasesApi } from "../api/testcases";
-import type { Requirement } from "../types";
+import type { ProjectUsageSummary, Requirement } from "../types";
+
+const emptyUsage: ProjectUsageSummary = {
+  project_id: "",
+  llm: {
+    provider: "",
+    model: "",
+    requests: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    estimated_cost_usd: 0,
+  },
+  embedding: {
+    provider: "",
+    model: "",
+    requests: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    estimated_cost_usd: 0,
+  },
+  total_estimated_cost_usd: 0,
+};
+
+function formatUsd(value: number) {
+  if (value === 0) return "$0.0000";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+}
 
 export default function DashboardPage() {
   const nav = useNavigate();
@@ -13,17 +43,24 @@ export default function DashboardPage() {
   const [reqs, setReqs]   = useState<Requirement[]>([]);
   const [tcCounts, setTcCounts] = useState<Record<string, number>>({});
   const [stats, setStats] = useState({ testCases: 0, requirements: 0, docs: 0, chunks: 0 });
+  const [usage, setUsage] = useState<ProjectUsageSummary>(emptyUsage);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!activeProject) { setLoading(false); return; }
+    if (!activeProject) {
+      setUsage(emptyUsage);
+      setLoading(false);
+      return;
+    }
     (async () => {
       try {
-        const [reqs, docStats] = await Promise.all([
+        const [reqs, docStats, usageStats] = await Promise.all([
           requirementsApi.list(activeProject.id),
           documentsApi.stats(activeProject.id).catch(() => ({ total_chunks: 0, document_count: 0 })),
+          projectsApi.usage(activeProject.id).catch(() => emptyUsage),
         ]);
         setReqs(reqs.slice(0, 5));
+        setUsage(usageStats);
         const counts: Record<string, number> = {};
         let totalTcs = 0;
         await Promise.all(reqs.map(async r => {
@@ -79,6 +116,56 @@ export default function DashboardPage() {
             </div>
           </div>
         ))}
+      </div>
+
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <div className="text-sm font-semibold text-gray-900">Query LLM Usage</div>
+              <div className="text-xs text-gray-500 mt-1">{usage.llm.provider || activeProject.llm_provider} / {usage.llm.model || activeProject.llm_model}</div>
+            </div>
+            <div className="text-xs rounded-full bg-blue-50 text-blue-700 px-2 py-1">{usage.llm.requests.toLocaleString()} calls</div>
+          </div>
+          <div className="text-2xl font-bold text-slate-900">{usage.llm.total_tokens.toLocaleString()}</div>
+          <div className="text-sm text-gray-500 mt-1">input {usage.llm.input_tokens.toLocaleString()} · output {usage.llm.output_tokens.toLocaleString()}</div>
+          <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between text-sm">
+            <span className="text-gray-500">Approx. cost</span>
+            <span className="font-semibold text-slate-900">{formatUsd(usage.llm.estimated_cost_usd)}</span>
+          </div>
+        </div>
+
+        <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <div className="text-sm font-semibold text-gray-900">Embedding Usage</div>
+              <div className="text-xs text-gray-500 mt-1">{usage.embedding.provider || activeProject.embedding_provider || "default"} / {usage.embedding.model || activeProject.embedding_model || "default"}</div>
+            </div>
+            <div className="text-xs rounded-full bg-emerald-50 text-emerald-700 px-2 py-1">{usage.embedding.requests.toLocaleString()} calls</div>
+          </div>
+          <div className="text-2xl font-bold text-slate-900">{usage.embedding.total_tokens.toLocaleString()}</div>
+          <div className="text-sm text-gray-500 mt-1">Includes document indexing and RAG lookups</div>
+          <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between text-sm">
+            <span className="text-gray-500">Approx. cost</span>
+            <span className="font-semibold text-slate-900">{formatUsd(usage.embedding.estimated_cost_usd)}</span>
+          </div>
+        </div>
+
+        <div className="bg-slate-900 text-white border border-slate-800 rounded-lg p-4 shadow-sm">
+          <div className="text-sm font-semibold text-white/90">Estimated AI Spend</div>
+          <div className="text-3xl font-bold mt-3">{formatUsd(usage.total_estimated_cost_usd)}</div>
+          <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+            <div className="rounded-md bg-white/10 p-3">
+              <div className="text-white/60 text-xs uppercase tracking-wide">LLM Share</div>
+              <div className="mt-1 font-medium">{formatUsd(usage.llm.estimated_cost_usd)}</div>
+            </div>
+            <div className="rounded-md bg-white/10 p-3">
+              <div className="text-white/60 text-xs uppercase tracking-wide">Embedding Share</div>
+              <div className="mt-1 font-medium">{formatUsd(usage.embedding.estimated_cost_usd)}</div>
+            </div>
+          </div>
+          <p className="text-xs text-white/60 mt-4">Costs are estimated from provider/model-specific token rates and may differ from billed totals.</p>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-6">

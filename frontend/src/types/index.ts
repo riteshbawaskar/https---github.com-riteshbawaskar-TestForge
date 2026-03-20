@@ -89,3 +89,20 @@ export interface GitLabConnectionResult {
   open_issues_count?: number;
   error?: string;
 }
+
+export interface UsageBreakdown {
+  provider: string;
+  model: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+}
+
+export interface ProjectUsageSummary {
+  project_id: string;
+  llm: UsageBreakdown;
+  embedding: UsageBreakdown;
+  total_estimated_cost_usd: number;
+}

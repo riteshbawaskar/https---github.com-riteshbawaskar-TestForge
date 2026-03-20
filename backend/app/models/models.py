@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -44,6 +44,13 @@ class Project(Base):
     embedding_provider: Mapped[str | None]        = mapped_column(String(50))     # overrides global EMBEDDING_PROVIDER
     embedding_model: Mapped[str | None]           = mapped_column(String(100))    # overrides global EMBEDDING_MODEL
     embedding_api_key_encrypted: Mapped[str | None] = mapped_column(Text)         # per-project embedding key override
+    llm_requests: Mapped[int]                 = mapped_column(Integer, default=0)
+    llm_input_tokens: Mapped[int]             = mapped_column(Integer, default=0)
+    llm_output_tokens: Mapped[int]            = mapped_column(Integer, default=0)
+    llm_cost_usd: Mapped[float]               = mapped_column(Float, default=0.0)
+    embedding_requests: Mapped[int]           = mapped_column(Integer, default=0)
+    embedding_tokens: Mapped[int]             = mapped_column(Integer, default=0)
+    embedding_cost_usd: Mapped[float]         = mapped_column(Float, default=0.0)
     custom_instructions: Mapped[str | None]       = mapped_column(Text)
     # Test generation defaults
     default_format: Mapped[str]             = mapped_column(String(20),  default="BDD")

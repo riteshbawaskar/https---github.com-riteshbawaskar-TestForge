@@ -18,8 +18,7 @@ export const config = {
   embeddingProvider: process.env.EMBEDDING_PROVIDER || 'openai',
   embeddingModel:    process.env.EMBEDDING_MODEL    || 'text-embedding-3-small',
 
-  qdrantUrl:    process.env.QDRANT_URL    || 'http://localhost:6333',
-  qdrantApiKey: process.env.QDRANT_API_KEY || '',
+  lanceDbPath:  process.env.LANCEDB_PATH  || './lancedb_storage',
 
   uploadDir:   process.env.UPLOAD_DIR   || './uploads',
   maxUploadMb: parseInt(process.env.MAX_UPLOAD_MB || '50'),

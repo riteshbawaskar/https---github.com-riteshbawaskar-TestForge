@@ -5,10 +5,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_project_repo
+from app.core.config import settings
 from app.core.security import encrypt_token
 from app.db.repository import ProjectRepository
 from app.db.session import get_db
-from app.schemas.schemas import GitLabConnectionResult, ProjectCreate, ProjectRead, ProjectUpdate
+from app.schemas.schemas import GitLabConnectionResult, ProjectCreate, ProjectRead, ProjectUpdate, ProjectUsageSummary, UsageBreakdown
 from app.services.gitlab_service import GitLabService
 
 router = APIRouter()
@@ -41,6 +42,36 @@ async def list_projects(repo: ProjectRepository = Depends(get_project_repo)):
 @router.get("/{project_id}", response_model=ProjectRead)
 async def get_project(project_id: str, repo: ProjectRepository = Depends(get_project_repo)):
     return await repo.get_or_raise(project_id)
+
+
+@router.get("/{project_id}/usage", response_model=ProjectUsageSummary)
+async def get_project_usage(project_id: str, repo: ProjectRepository = Depends(get_project_repo)):
+    project = await repo.get_or_raise(project_id)
+    embedding_provider = project.embedding_provider or settings.EMBEDDING_PROVIDER
+    embedding_model = project.embedding_model or settings.EMBEDDING_MODEL
+    llm_total_tokens = project.llm_input_tokens + project.llm_output_tokens
+    return ProjectUsageSummary(
+        project_id=project.id,
+        llm=UsageBreakdown(
+            provider=project.llm_provider,
+            model=project.llm_model,
+            requests=project.llm_requests,
+            input_tokens=project.llm_input_tokens,
+            output_tokens=project.llm_output_tokens,
+            total_tokens=llm_total_tokens,
+            estimated_cost_usd=project.llm_cost_usd,
+        ),
+        embedding=UsageBreakdown(
+            provider=embedding_provider,
+            model=embedding_model,
+            requests=project.embedding_requests,
+            input_tokens=project.embedding_tokens,
+            output_tokens=0,
+            total_tokens=project.embedding_tokens,
+            estimated_cost_usd=project.embedding_cost_usd,
+        ),
+        total_estimated_cost_usd=project.llm_cost_usd + project.embedding_cost_usd,
+    )
 
 
 @router.put("/{project_id}", response_model=ProjectRead)

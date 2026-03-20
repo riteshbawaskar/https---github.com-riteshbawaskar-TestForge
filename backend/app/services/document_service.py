@@ -26,6 +26,11 @@ from typing import List, Optional
 
 from app.core.config import settings
 from app.core.exceptions import DocumentIngestionError
+from app.services.usage_service import (
+    UsageMetrics,
+    extract_gemini_embedding_usage,
+    extract_openai_embedding_usage,
+)
 
 import logging
 log = logging.getLogger(__name__)
@@ -114,7 +119,7 @@ def _ensure_collection(client, name: str, cfg: Optional[EmbeddingConfig] = None)
 
 # ─────────────────────────────── Embedding ───────────────────────────────────
 
-def _embed_openai(texts: List[str], model: str = "", api_key: str = "") -> List[List[float]]:
+def _embed_openai(texts: List[str], model: str = "", api_key: str = "") -> tuple[List[List[float]], UsageMetrics]:
     key = api_key or settings.OPENAI_API_KEY
     if not key:
         raise DocumentIngestionError(
@@ -125,10 +130,10 @@ def _embed_openai(texts: List[str], model: str = "", api_key: str = "") -> List[
     import openai
     client = openai.OpenAI(api_key=key)
     resp = client.embeddings.create(model=resolved_model, input=texts)
-    return [item.embedding for item in resp.data]
+    return [item.embedding for item in resp.data], extract_openai_embedding_usage(resp, "openai", resolved_model, texts)
 
 
-def _embed_gemini(texts: List[str], model: str = "", api_key: str = "") -> List[List[float]]:
+def _embed_gemini(texts: List[str], model: str = "", api_key: str = "") -> tuple[List[List[float]], UsageMetrics]:
     key = api_key or settings.GEMINI_API_KEY
     if not key:
         raise DocumentIngestionError(
@@ -141,13 +146,15 @@ def _embed_gemini(texts: List[str], model: str = "", api_key: str = "") -> List[
     if resolved_model == "text-embedding-3-small":
         resolved_model = "models/text-embedding-004"
     results = []
+    usage = UsageMetrics()
     for text in texts:
         r = genai.embed_content(model=resolved_model, content=text, task_type="retrieval_document")
         results.append(r["embedding"])
-    return results
+        usage.add(extract_gemini_embedding_usage(r, "gemini", resolved_model, text))
+    return results, usage
 
 
-def _embed(texts: List[str], cfg: Optional[EmbeddingConfig] = None) -> List[List[float]]:
+def _embed(texts: List[str], cfg: Optional[EmbeddingConfig] = None) -> tuple[List[List[float]], UsageMetrics]:
     """Dispatch to the configured embedding provider."""
     p = (cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER).lower()
     m = cfg.resolved_model() if cfg else settings.EMBEDDING_MODEL
@@ -243,7 +250,7 @@ def ingest_document(
     project_id: str,
     document_id: str,
     cfg: Optional[EmbeddingConfig] = None,
-) -> int:
+) -> tuple[int, UsageMetrics]:
     """Parse, chunk, embed, and upsert document into Qdrant. Returns chunk count."""
     filename = Path(file_path).name
     provider = cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER
@@ -268,8 +275,11 @@ def ingest_document(
     try:
         BATCH = 200 if provider.lower() == "openai" else 32
         all_embeddings: List[List[float]] = []
+        usage = UsageMetrics()
         for i in range(0, len(chunks), BATCH):
-            all_embeddings.extend(_embed(chunks[i : i + BATCH], cfg))
+            batch_embeddings, batch_usage = _embed(chunks[i : i + BATCH], cfg)
+            all_embeddings.extend(batch_embeddings)
+            usage.add(batch_usage)
     except DocumentIngestionError:
         raise
     except Exception as exc:
@@ -300,7 +310,7 @@ def ingest_document(
         raise DocumentIngestionError(f"Qdrant upsert failed for {filename}: {exc}") from exc
 
     log.info(f"ingest_complete file={filename} chunks={len(chunks)}")
-    return len(chunks)
+    return len(chunks), usage
 
 
 def retrieve_context(
@@ -308,27 +318,28 @@ def retrieve_context(
     project_id: str,
     n: int = 0,
     cfg: Optional[EmbeddingConfig] = None,
-) -> List[str]:
+) -> tuple[List[str], UsageMetrics]:
     """Return top-n text chunks most relevant to query. Never raises."""
     k = n or settings.RAG_TOP_K
     p = (cfg.resolved_provider() if cfg else settings.EMBEDDING_PROVIDER).lower()
     ek = cfg.resolved_key() if cfg else ""
     if p == "openai" and not (ek or settings.OPENAI_API_KEY):
-        return []
+        return [], UsageMetrics()
     if p == "gemini" and not (ek or settings.GEMINI_API_KEY):
-        return []
+        return [], UsageMetrics()
     try:
         client = _qdrant()
         col    = _collection_name(project_id)
         existing = {c.name for c in client.get_collections().collections}
         if col not in existing:
-            return []
-        q_vec = _embed([query], cfg)[0]
+            return [], UsageMetrics()
+        query_embeddings, usage = _embed([query], cfg)
+        q_vec = query_embeddings[0]
         hits  = client.search(collection_name=col, query_vector=q_vec, limit=k)
-        return [h.payload.get("text", "") for h in hits if h.payload]
+        return [h.payload.get("text", "") for h in hits if h.payload], usage
     except Exception as exc:
         log.warning(f"retrieve_context failed project={project_id} error={exc}")
-        return []
+        return [], UsageMetrics()
 
 
 def delete_document_vectors(project_id: str, document_id: str) -> int:
